@@ -1,0 +1,1117 @@
+'use client'
+
+import { useEffect, useState, useRef } from 'react'
+import { useRouter } from 'next/navigation'
+import { supabase } from '@/lib/supabase'
+
+// ─── Types ───────────────────────────────────────────────
+type Org = {
+  id: string; name: string; inn: string; director_name: string
+  bank_name: string; bank_account: string; mfo: string; address: string
+  stamp_url?: string; signature_url?: string
+}
+type BankAccount = {
+  id: string; organization_id: string; bank_name: string
+  account_number: string; mfo: string; is_default: boolean
+}
+type Counterparty = {
+  id: string; name: string; inn: string; director_name: string
+  bank_name: string; bank_account: string; mfo: string; address: string
+}
+type Contract = {
+  id: string; contract_number: string; contract_date: string
+  contract_type: string; amount: number; status: string
+  organization_id: string; counterparty_id: string
+  organizations?: Org; counterparties?: Counterparty; created_at: string
+}
+type Subscription = {
+  id: string; organization_id: string; plan: string
+  contracts_used: number; period_end: string; is_active: boolean
+}
+
+// ─── Constants ───────────────────────────────────────────
+const STATUSES = {
+  draft:     { label: 'Qoralama',       bg: 'bg-gray-700',    text: 'text-gray-300' },
+  active:    { label: 'Faol',           bg: 'bg-emerald-900', text: 'text-emerald-300' },
+  completed: { label: 'Bajarilgan',     bg: 'bg-blue-900',    text: 'text-blue-300' },
+  cancelled: { label: 'Bekor qilingan', bg: 'bg-red-900',     text: 'text-red-300' },
+}
+const CONTRACT_TYPES: Record<string, string> = {
+  oldi_sotdi: 'Oldi-sotdi shartnomasi',
+  xizmat: "Xizmat ko'rsatish shartnomasi",
+  ijara: 'Ijara shartnomasi',
+  pudrat: 'Pudrat shartnomasi',
+  qoshimcha: "Qo'shimcha shartnoma",
+  moliyaviy: 'Moliyaviy yordam shartnomasi',
+  daval: 'Daval shartnomasi',
+  xalqaro: 'Xalqaro shartnoma',
+  boshqa: 'Boshqa',
+}
+const FREE_LIMIT = 5
+const NAV = [
+  { key: 'overview',       icon: '▣',  label: "Umumiy ko'rinish" },
+  { key: 'contracts',      icon: '📄', label: 'Shartnomalar' },
+  { key: 'organizations',  icon: '🏢', label: 'Tashkilotlarim' },
+  { key: 'counterparties', icon: '🤝', label: 'Kontragentlar' },
+  { key: 'profile',        icon: '👤', label: 'Profil' },
+]
+
+// ─── Main Component ───────────────────────────────────────
+export default function DashboardPage() {
+  const router = useRouter()
+  const [tab, setTab] = useState('overview')
+  const [userEmail, setUserEmail] = useState('')
+  const [userId, setUserId] = useState('')
+  const [orgs, setOrgs] = useState<Org[]>([])
+  const [activeOrg, setActiveOrg] = useState<Org | null>(null)
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([])
+  const [cps, setCps] = useState<Counterparty[]>([])
+  const [contracts, setContracts] = useState<Contract[]>([])
+  const [subscription, setSubscription] = useState<Subscription | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [cpSearch, setCpSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [orgDropdown, setOrgDropdown] = useState(false)
+
+  const [modal, setModal] = useState<null|'org'|'cp'|'contract'|'viewContract'|'bankAccount'|'upgrade'>(null)
+  const [viewContract, setViewContract] = useState<Contract | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const emptyOrg = { name:'', inn:'', director_name:'', bank_name:'', bank_account:'', mfo:'', address:'' }
+  const emptyCp  = { name:'', inn:'', director_name:'', bank_name:'', bank_account:'', mfo:'', address:'' }
+  const emptyContract = {
+    contract_number:'', contract_date: new Date().toISOString().split('T')[0],
+    contract_type:'oldi_sotdi', amount:'', organization_id:'', counterparty_id:'', status:'draft'
+  }
+  const emptyBank = { bank_name:'', account_number:'', mfo:'', is_default: false }
+
+  const [orgForm, setOrgForm] = useState(emptyOrg)
+  const [cpForm, setCpForm]   = useState(emptyCp)
+  const [contractForm, setContractForm] = useState(emptyContract)
+  const [bankForm, setBankForm] = useState(emptyBank)
+
+  const [profile, setProfile] = useState({
+    full_name:'', phone:'', company_name:'', company_inn:'',
+    company_director:'', company_bank:'', company_account:'', company_mfo:'', company_address:''
+  })
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profileMsg, setProfileMsg] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [pwdMsg, setPwdMsg] = useState('')
+
+  const stampRef = useRef<HTMLInputElement>(null)
+  const signatureRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { init() }, [])
+
+  async function init() {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) { router.push('/login'); return }
+    setUserEmail(session.user.email || '')
+    setUserId(session.user.id)
+    await Promise.all([loadOrgs(), loadCps(), loadContracts(), loadProfile(session.user.id)])
+    setLoading(false)
+  }
+
+  async function loadOrgs() {
+    const { data } = await supabase.from('organizations').select('*').order('created_at', { ascending: false })
+    const list = data || []
+    setOrgs(list)
+    if (list.length > 0) {
+      setActiveOrg(prev => prev ? (list.find(o => o.id === prev.id) || list[0]) : list[0])
+    }
+  }
+
+  async function loadBankAccounts(orgId: string) {
+    const { data } = await supabase.from('bank_accounts').select('*').eq('organization_id', orgId).order('is_default', { ascending: false })
+    setBankAccounts(data || [])
+  }
+
+  async function loadSubscription(orgId: string) {
+    const { data } = await supabase.from('subscriptions').select('*')
+      .eq('organization_id', orgId).eq('is_active', true).single()
+    setSubscription(data || null)
+  }
+
+  async function loadCps() {
+    const { data } = await supabase.from('counterparties').select('*').order('created_at', { ascending: false })
+    setCps(data || [])
+  }
+
+  async function loadContracts() {
+    const { data } = await supabase.from('contracts').select('*, organizations(*), counterparties(*)').order('created_at', { ascending: false })
+    setContracts(data || [])
+  }
+
+  async function loadProfile(uid: string) {
+    const { data } = await supabase.from('profiles').select('*').eq('id', uid).single()
+    if (data) setProfile({
+      full_name: data.full_name||'', phone: data.phone||'',
+      company_name: data.company_name||'', company_inn: data.company_inn||'',
+      company_director: data.company_director||'', company_bank: data.company_bank||'',
+      company_account: data.company_account||'', company_mfo: data.company_mfo||'',
+      company_address: data.company_address||''
+    })
+  }
+
+  useEffect(() => {
+    if (activeOrg) {
+      loadBankAccounts(activeOrg.id)
+      loadSubscription(activeOrg.id)
+    }
+  }, [activeOrg])
+
+  async function switchOrg(org: Org) {
+    setActiveOrg(org)
+    setOrgDropdown(false)
+  }
+
+  async function logout() {
+    await supabase.auth.signOut()
+    router.push('/login')
+  }
+
+  // ── Quota check ──
+  function canCreateContract(): boolean {
+    if (!subscription) return (contracts.filter(c => c.organization_id === activeOrg?.id).length < FREE_LIMIT)
+    if (subscription.plan === 'free') return subscription.contracts_used < FREE_LIMIT
+    return true
+  }
+
+  function getQuotaInfo() {
+    if (!activeOrg) return null
+    const orgContracts = contracts.filter(c => c.organization_id === activeOrg.id)
+    if (!subscription || subscription.plan === 'free') {
+      const used = subscription?.contracts_used ?? orgContracts.length
+      return { plan: 'Bepul', used, limit: FREE_LIMIT, percent: Math.min((used / FREE_LIMIT) * 100, 100) }
+    }
+    return { plan: subscription.plan === 'standard' ? 'Standart' : 'AI Pro', used: null, limit: null, percent: null }
+  }
+
+  // ── Save org ──
+  async function saveOrg(e: React.FormEvent) {
+    e.preventDefault(); setSaving(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    const { data: newOrg } = await supabase.from('organizations').insert({ ...orgForm, user_id: session!.user.id }).select().single()
+    if (newOrg) {
+      // Create free subscription for new org
+      await supabase.from('subscriptions').insert({
+        organization_id: newOrg.id, user_id: session!.user.id,
+        plan: 'free', contracts_used: 0,
+        period_end: new Date(Date.now() + 30*24*60*60*1000).toISOString()
+      })
+    }
+    setModal(null); setOrgForm(emptyOrg); setSaving(false); loadOrgs()
+  }
+
+  async function saveCp(e: React.FormEvent) {
+    e.preventDefault(); setSaving(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    await supabase.from('counterparties').insert({ ...cpForm, user_id: session!.user.id })
+    setModal(null); setCpForm(emptyCp); setSaving(false); loadCps()
+  }
+
+  async function saveContract(e: React.FormEvent) {
+    e.preventDefault()
+    if (!canCreateContract()) { setModal('upgrade'); return }
+    setSaving(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    await supabase.from('contracts').insert({ ...contractForm, amount: parseFloat(contractForm.amount)||0, user_id: session!.user.id })
+    // Increment usage
+    if (subscription) {
+      await supabase.from('subscriptions').update({ contracts_used: subscription.contracts_used + 1 }).eq('id', subscription.id)
+    }
+    setModal(null); setContractForm(emptyContract); setSaving(false)
+    loadContracts(); if (activeOrg) loadSubscription(activeOrg.id)
+  }
+
+  async function saveBankAccount(e: React.FormEvent) {
+    e.preventDefault(); setSaving(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    if (bankForm.is_default && activeOrg) {
+      await supabase.from('bank_accounts').update({ is_default: false }).eq('organization_id', activeOrg.id)
+    }
+    await supabase.from('bank_accounts').insert({ ...bankForm, organization_id: activeOrg!.id, user_id: session!.user.id })
+    setModal(null); setBankForm(emptyBank); setSaving(false); loadBankAccounts(activeOrg!.id)
+  }
+
+  async function copyContract(c: Contract) {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!canCreateContract()) { setModal('upgrade'); return }
+    const newNum = c.contract_number + '-NUSXA'
+    await supabase.from('contracts').insert({
+      contract_number: newNum, contract_date: new Date().toISOString().split('T')[0],
+      contract_type: c.contract_type, amount: c.amount, status: 'draft',
+      organization_id: c.organization_id, counterparty_id: c.counterparty_id,
+      user_id: session!.user.id
+    })
+    loadContracts()
+  }
+
+  async function updateStatus(id: string, status: string) {
+    await supabase.from('contracts').update({ status }).eq('id', id)
+    loadContracts()
+  }
+
+  async function deleteContract(id: string) {
+    if (!confirm("O'chirishni tasdiqlaysizmi?")) return
+    await supabase.from('contracts').delete().eq('id', id)
+    loadContracts()
+  }
+
+  async function deleteBankAccount(id: string) {
+    await supabase.from('bank_accounts').delete().eq('id', id)
+    if (activeOrg) loadBankAccounts(activeOrg.id)
+  }
+
+  async function saveProfile(e: React.FormEvent) {
+    e.preventDefault(); setProfileSaving(true); setProfileMsg('')
+    const { data: { session } } = await supabase.auth.getSession()
+    await supabase.from('profiles').upsert({ id: session!.user.id, ...profile, updated_at: new Date().toISOString() })
+    setProfileMsg('Profil saqlandi ✓'); setProfileSaving(false)
+    setTimeout(() => setProfileMsg(''), 3000)
+  }
+
+  async function changePassword(e: React.FormEvent) {
+    e.preventDefault(); setPwdMsg('')
+    if (newPassword.length < 8) { setPwdMsg("Parol kamida 8 belgi bo'lishi kerak"); return }
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    if (error) setPwdMsg('Xatolik: ' + error.message)
+    else { setPwdMsg("Parol muvaffaqiyatli o'zgartirildi ✓"); setNewPassword('') }
+    setTimeout(() => setPwdMsg(''), 4000)
+  }
+
+  async function uploadImage(file: File, field: 'stamp_url' | 'signature_url') {
+    if (!activeOrg) return
+    const ext = file.name.split('.').pop()
+    const path = `${userId}/${activeOrg.id}/${field}.${ext}`
+    const { error: upErr } = await supabase.storage.from('org-assets').upload(path, file, { upsert: true })
+    if (upErr) { alert('Yuklash xatosi: ' + upErr.message); return }
+    const { data } = supabase.storage.from('org-assets').getPublicUrl(path)
+    await supabase.from('organizations').update({ [field]: data.publicUrl }).eq('id', activeOrg.id)
+    loadOrgs()
+  }
+
+  async function generatePDF(c: Contract) {
+    const { jsPDF } = await import('jspdf')
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+    const t = (text: string, x: number, y: number, size = 11) => { doc.setFontSize(size); doc.text(String(text||''), x, y) }
+    doc.setFillColor(30, 41, 59); doc.rect(0, 0, 210, 40, 'F')
+    doc.setTextColor(255, 255, 255)
+    t('SHARTNOMA', 105, 16, 22); doc.setFont('helvetica','normal')
+    t(`№ ${c.contract_number}   |   Sana: ${c.contract_date}`, 105, 27, 10)
+    t(CONTRACT_TYPES[c.contract_type] || c.contract_type, 105, 34, 9)
+    doc.setTextColor(0,0,0)
+    doc.setDrawColor(220,220,220)
+    doc.rect(10, 48, 90, 75); doc.rect(110, 48, 90, 75)
+    doc.setFontSize(8); doc.setTextColor(100,100,100)
+    doc.text('BUYURTMACHI', 55, 54, {align:'center'})
+    doc.text('IJROCHI', 155, 54, {align:'center'})
+    doc.setTextColor(0,0,0)
+    if (c.organizations) {
+      const o = c.organizations
+      t(o.name, 13, 62, 9)
+      t(`INN: ${o.inn||'—'}`, 13, 70, 8)
+      t(`Rahbar: ${o.director_name||'—'}`, 13, 78, 8)
+      t(`Bank: ${o.bank_name||'—'}`, 13, 86, 8)
+      t(`H/r: ${o.bank_account||'—'}`, 13, 94, 8)
+      t(`MFO: ${o.mfo||'—'}`, 13, 102, 8)
+      t(`Manzil: ${o.address||'—'}`, 13, 110, 7)
+    }
+    if (c.counterparties) {
+      const cp = c.counterparties
+      t(cp.name, 113, 62, 9)
+      t(`INN: ${cp.inn||'—'}`, 113, 70, 8)
+      t(`Rahbar: ${cp.director_name||'—'}`, 113, 78, 8)
+      t(`Bank: ${cp.bank_name||'—'}`, 113, 86, 8)
+      t(`H/r: ${cp.bank_account||'—'}`, 113, 94, 8)
+      t(`MFO: ${cp.mfo||'—'}`, 113, 102, 8)
+      t(`Manzil: ${cp.address||'—'}`, 113, 110, 7)
+    }
+    doc.setDrawColor(220,220,220); doc.line(10, 132, 200, 132)
+    t('Shartnoma shartlari', 10, 141, 11)
+    t(`Shartnoma turi: ${CONTRACT_TYPES[c.contract_type]||c.contract_type}`, 10, 151, 9)
+    t(`Shartnoma summasi: ${c.amount?.toLocaleString()} so'm`, 10, 159, 9)
+    t(`Holat: ${STATUSES[c.status as keyof typeof STATUSES]?.label}`, 10, 167, 9)
+    doc.setDrawColor(200,200,200)
+    doc.line(15, 240, 90, 240); doc.line(120, 240, 195, 240)
+    t('Buyurtmachi', 52, 247, 8); t('Ijrochi', 157, 247, 8)
+    t('________________', 15, 248, 9); t('________________', 120, 248, 9)
+    t('M.O.', 15, 258, 8); t('M.O.', 120, 258, 8)
+    doc.setFontSize(7); doc.setTextColor(180,180,180)
+    doc.text('Shartnoma.uz — Online shartnoma generatori', 105, 287, {align:'center'})
+    doc.save(`shartnoma-${c.contract_number.replace(/\//g,'-')}.pdf`)
+  }
+
+  // ── Filters ──
+  const filteredContracts = contracts.filter(c => {
+    const s = search.toLowerCase()
+    const matchSearch = !search || c.contract_number.toLowerCase().includes(s) ||
+      c.organizations?.name.toLowerCase().includes(s) || c.counterparties?.name.toLowerCase().includes(s)
+    const matchStatus = statusFilter === 'all' || c.status === statusFilter
+    return matchSearch && matchStatus
+  })
+
+  const filteredCps = cps.filter(cp => {
+    const s = cpSearch.toLowerCase()
+    return !cpSearch || cp.name.toLowerCase().includes(s) || cp.inn?.toLowerCase().includes(s)
+  })
+
+  const totalActive = contracts.filter(c => c.status === 'active').reduce((s,c) => s+(c.amount||0), 0)
+  const quota = getQuotaInfo()
+
+  // ── Styles ──
+  const inp = "w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 placeholder-gray-500"
+  const lbl = "block text-xs font-medium text-gray-400 mb-1.5"
+
+  if (loading) return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+      <div className="flex flex-col items-center gap-4">
+        <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"/>
+        <div className="text-gray-400 text-sm">Yuklanmoqda...</div>
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="min-h-screen bg-gray-950 flex text-white">
+
+      {/* ── SIDEBAR ── */}
+      <aside className={`${sidebarOpen?'w-64':'w-16'} bg-gray-900 border-r border-gray-800 flex flex-col flex-shrink-0 transition-all duration-300`}>
+
+        {/* Logo */}
+        <div className="h-16 flex items-center px-4 border-b border-gray-800 gap-3">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center flex-shrink-0 font-bold text-sm shadow-lg shadow-blue-900/50">S</div>
+          {sidebarOpen && <span className="text-lg font-bold">Shartnoma.uz</span>}
+        </div>
+
+        {/* Org Switcher */}
+        {sidebarOpen && orgs.length > 0 && (
+          <div className="px-3 pt-3 relative">
+            <button
+              onClick={() => setOrgDropdown(!orgDropdown)}
+              className="w-full flex items-center gap-2 bg-gray-800 hover:bg-gray-750 border border-gray-700 rounded-lg px-3 py-2.5 transition text-left"
+            >
+              <div className="w-7 h-7 bg-blue-900 rounded-md flex items-center justify-center text-xs font-bold text-blue-300 flex-shrink-0">
+                {activeOrg?.name[0]?.toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium text-white truncate">{activeOrg?.name}</div>
+                <div className="text-xs text-gray-500">INN: {activeOrg?.inn||'—'}</div>
+              </div>
+              <svg className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${orgDropdown?'rotate-180':''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/>
+              </svg>
+            </button>
+            {orgDropdown && (
+              <div className="absolute left-3 right-3 top-full mt-1 bg-gray-800 border border-gray-700 rounded-xl shadow-xl z-50 overflow-hidden">
+                {orgs.map(org => (
+                  <button key={org.id} onClick={() => switchOrg(org)}
+                    className={`w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-gray-700 transition text-sm ${activeOrg?.id===org.id?'bg-blue-900/30 text-blue-300':'text-gray-300'}`}>
+                    <div className="w-6 h-6 bg-gray-700 rounded flex items-center justify-center text-xs font-bold flex-shrink-0">
+                      {org.name[0]?.toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{org.name}</div>
+                      <div className="text-xs text-gray-500">{org.inn}</div>
+                    </div>
+                    {activeOrg?.id===org.id && <span className="ml-auto text-blue-400 text-xs">●</span>}
+                  </button>
+                ))}
+                <div className="border-t border-gray-700">
+                  <button onClick={() => { setModal('org'); setOrgDropdown(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-gray-700 transition text-sm text-blue-400">
+                    <span>+</span> Yangi tashkilot
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Quota bar */}
+        {sidebarOpen && quota && (
+          <div className="px-3 pt-3">
+            <div className="bg-gray-800 rounded-lg px-3 py-2.5">
+              <div className="flex justify-between text-xs mb-1.5">
+                <span className="text-gray-400">Tarif: <span className="text-white font-medium">{quota.plan}</span></span>
+                {quota.limit && <span className="text-gray-400">{quota.used}/{quota.limit}</span>}
+              </div>
+              {quota.limit && (
+                <>
+                  <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all ${quota.percent! >= 100 ? 'bg-red-500' : quota.percent! >= 80 ? 'bg-yellow-500' : 'bg-blue-500'}`}
+                      style={{ width: `${quota.percent}%` }}/>
+                  </div>
+                  {quota.percent! >= 80 && (
+                    <button onClick={() => setModal('upgrade')} className="text-xs text-yellow-400 mt-1.5 hover:text-yellow-300">
+                      ⚡ Tarifni yaxshilash →
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Nav */}
+        <nav className="flex-1 p-3 space-y-1 mt-2 overflow-hidden">
+          {NAV.map(item => (
+            <button key={item.key} onClick={() => setTab(item.key)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ${
+                tab===item.key ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/30' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+              }`}>
+              <span className="text-base flex-shrink-0">{item.icon}</span>
+              {sidebarOpen && <span className="flex-1 text-left font-medium">{item.label}</span>}
+              {sidebarOpen && item.key==='contracts' && (
+                <span className={`text-xs px-1.5 py-0.5 rounded-full ${tab===item.key?'bg-blue-500':'bg-gray-700 text-gray-400'}`}>
+                  {contracts.length}
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
+
+        {/* User */}
+        <div className="p-3 border-t border-gray-800 space-y-2">
+          {sidebarOpen && (
+            <div className="px-3 py-2 rounded-lg bg-gray-800">
+              <div className="text-xs text-gray-500">Hisob</div>
+              <div className="text-sm text-white truncate font-medium mt-0.5">{userEmail}</div>
+            </div>
+          )}
+          <button onClick={logout}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-400 hover:bg-red-900/30 hover:text-red-400 transition">
+            <span className="flex-shrink-0">🚪</span>
+            {sidebarOpen && <span>Chiqish</span>}
+          </button>
+        </div>
+      </aside>
+
+      {/* ── MAIN ── */}
+      <div className="flex-1 flex flex-col min-w-0">
+
+        {/* Topbar */}
+        <header className="h-16 bg-gray-900 border-b border-gray-800 flex items-center px-6 gap-4 flex-shrink-0">
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-gray-800 transition">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16"/>
+            </svg>
+          </button>
+          <h1 className="text-base font-semibold flex-1">{NAV.find(n=>n.key===tab)?.label}</h1>
+          {['contracts','organizations','counterparties'].includes(tab) && (
+            <button
+              onClick={() => {
+                if (tab==='contracts') { if (!canCreateContract()) { setModal('upgrade'); return } setModal('contract') }
+                if (tab==='organizations') setModal('org')
+                if (tab==='counterparties') setModal('cp')
+              }}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition shadow-lg shadow-blue-900/30"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/>
+              </svg>
+              Yangi qo'shish
+            </button>
+          )}
+        </header>
+
+        <main className="flex-1 overflow-auto p-6 bg-gray-950">
+
+          {/* ─── OVERVIEW ─── */}
+          {tab==='overview' && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                {[
+                  { label:'Jami shartnoma', value:contracts.length, icon:'📄', from:'from-blue-600', to:'to-blue-900' },
+                  { label:'Faol shartnoma', value:contracts.filter(c=>c.status==='active').length, icon:'✅', from:'from-emerald-600', to:'to-emerald-900' },
+                  { label:'Tashkilotlar', value:orgs.length, icon:'🏢', from:'from-purple-600', to:'to-purple-900' },
+                  { label:'Kontragentlar', value:cps.length, icon:'🤝', from:'from-orange-600', to:'to-orange-900' },
+                ].map((s,i) => (
+                  <div key={i} className={`bg-gradient-to-br ${s.from} ${s.to} rounded-xl p-5 shadow-lg`}>
+                    <div className="text-2xl mb-3">{s.icon}</div>
+                    <div className="text-3xl font-bold">{s.value}</div>
+                    <div className="text-sm opacity-80 mt-1">{s.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                  <div className="text-sm text-gray-400 mb-2">Faol shartnomalar summasi</div>
+                  <div className="text-3xl font-bold text-emerald-400">{totalActive.toLocaleString()} <span className="text-xl text-gray-500 font-normal">so'm</span></div>
+                </div>
+                {quota && quota.limit && (
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                    <div className="text-sm text-gray-400 mb-2">Oylik kvota — {quota.plan} tarif</div>
+                    <div className="text-3xl font-bold">{quota.used} <span className="text-xl text-gray-500 font-normal">/ {quota.limit}</span></div>
+                    <div className="mt-3 h-2 bg-gray-700 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${quota.percent!>=100?'bg-red-500':quota.percent!>=80?'bg-yellow-500':'bg-blue-500'}`}
+                        style={{width:`${quota.percent}%`}}/>
+                    </div>
+                    {quota.percent!>=80 && (
+                      <button onClick={()=>setModal('upgrade')} className="text-xs text-yellow-400 mt-2 hover:underline">⚡ Tarifni yaxshilash</button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-gray-900 border border-gray-800 rounded-xl">
+                <div className="flex justify-between items-center p-5 border-b border-gray-800">
+                  <h2 className="font-semibold">So'nggi shartnomalar</h2>
+                  <button onClick={()=>setTab('contracts')} className="text-blue-400 text-sm hover:text-blue-300">Hammasini ko'rish →</button>
+                </div>
+                {contracts.length===0 ? (
+                  <div className="p-10 text-center text-gray-500 text-sm">Hali shartnoma yo'q</div>
+                ) : (
+                  <div className="divide-y divide-gray-800">
+                    {contracts.slice(0,6).map(c => (
+                      <div key={c.id} className="flex items-center gap-4 px-5 py-3.5 hover:bg-gray-800/40 transition">
+                        <div className="w-9 h-9 bg-blue-900/60 rounded-lg flex items-center justify-center text-xs font-bold text-blue-300 flex-shrink-0">
+                          {c.contract_number.slice(0,2)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium">#{c.contract_number}</div>
+                          <div className="text-xs text-gray-400 truncate">{c.organizations?.name} → {c.counterparties?.name}</div>
+                        </div>
+                        <div className="text-right flex-shrink-0 space-y-0.5">
+                          <div className="text-sm font-medium">{c.amount?.toLocaleString()} so'm</div>
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${STATUSES[c.status as keyof typeof STATUSES]?.bg} ${STATUSES[c.status as keyof typeof STATUSES]?.text}`}>
+                            {STATUSES[c.status as keyof typeof STATUSES]?.label}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                {[
+                  { label:'Shartnoma yaratish', icon:'📄', action:()=>{ if(!canCreateContract()){setModal('upgrade');return}; setTab('contracts'); setModal('contract') } },
+                  { label:"Tashkilot qo'shish", icon:'🏢', action:()=>{ setTab('organizations'); setModal('org') } },
+                  { label:"Kontragent qo'shish", icon:'🤝', action:()=>{ setTab('counterparties'); setModal('cp') } },
+                ].map((a,i) => (
+                  <button key={i} onClick={a.action}
+                    className="bg-gray-900 border border-gray-800 hover:border-blue-600 hover:bg-gray-800 rounded-xl p-5 text-center transition group">
+                    <div className="text-3xl mb-3">{a.icon}</div>
+                    <div className="text-sm font-medium text-gray-300 group-hover:text-white">{a.label}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ─── CONTRACTS ─── */}
+          {tab==='contracts' && (
+            <div className="space-y-4">
+              <div className="flex gap-3">
+                <div className="flex-1 relative">
+                  <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                  </svg>
+                  <input value={search} onChange={e=>setSearch(e.target.value)}
+                    placeholder="Shartnoma raqami, tashkilot yoki kontragent..."
+                    className="w-full bg-gray-900 border border-gray-800 text-white rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                </div>
+                <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}
+                  className="bg-gray-900 border border-gray-800 text-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500">
+                  <option value="all">Barcha holat</option>
+                  <option value="draft">Qoralama</option>
+                  <option value="active">Faol</option>
+                  <option value="completed">Bajarilgan</option>
+                  <option value="cancelled">Bekor qilingan</option>
+                </select>
+              </div>
+
+              {filteredContracts.length===0 ? (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-16 text-center">
+                  <div className="text-5xl mb-4">📄</div>
+                  <p className="text-gray-400 font-medium">Shartnoma topilmadi</p>
+                </div>
+              ) : (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-gray-800 bg-gray-800/50">
+                        {['RAQAM','SANA','TUR','TASHKILOT','KONTRAGENT','SUMMA','HOLAT','AMALLAR'].map(h => (
+                          <th key={h} className="text-left text-xs font-medium text-gray-400 px-4 py-3 whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-800">
+                      {filteredContracts.map(c => (
+                        <tr key={c.id} className="hover:bg-gray-800/40 transition group">
+                          <td className="px-4 py-3.5">
+                            <span className="font-mono text-sm font-semibold text-blue-400">#{c.contract_number}</span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm text-gray-400 whitespace-nowrap">{c.contract_date}</td>
+                          <td className="px-4 py-3.5 text-xs text-gray-400 max-w-[120px] truncate">{CONTRACT_TYPES[c.contract_type]||c.contract_type}</td>
+                          <td className="px-4 py-3.5 text-sm text-white max-w-[120px] truncate">{c.organizations?.name||'—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-white max-w-[120px] truncate">{c.counterparties?.name||'—'}</td>
+                          <td className="px-4 py-3.5 text-sm font-medium whitespace-nowrap">{c.amount?.toLocaleString()} so'm</td>
+                          <td className="px-4 py-3.5">
+                            <select value={c.status} onChange={e=>updateStatus(c.id,e.target.value)}
+                              className={`text-xs px-2.5 py-1 rounded-full border-0 cursor-pointer focus:outline-none font-medium ${STATUSES[c.status as keyof typeof STATUSES]?.bg} ${STATUSES[c.status as keyof typeof STATUSES]?.text}`}>
+                              <option value="draft">Qoralama</option>
+                              <option value="active">Faol</option>
+                              <option value="completed">Bajarilgan</option>
+                              <option value="cancelled">Bekor qilingan</option>
+                            </select>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                              <button onClick={()=>{setViewContract(c);setModal('viewContract')}}
+                                className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs" title="Ko'rish">👁</button>
+                              <button onClick={()=>copyContract(c)}
+                                className="p-1.5 bg-blue-900 hover:bg-blue-800 rounded text-xs" title="Nusxa">📋</button>
+                              <button onClick={()=>generatePDF(c)}
+                                className="p-1.5 bg-emerald-800 hover:bg-emerald-700 rounded text-xs" title="PDF">📥</button>
+                              <button onClick={()=>deleteContract(c.id)}
+                                className="p-1.5 bg-red-900 hover:bg-red-800 rounded text-xs" title="O'chirish">🗑</button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="px-5 py-3 border-t border-gray-800 flex justify-between text-xs text-gray-500">
+                    <span>{filteredContracts.length} ta shartnoma</span>
+                    <span>Jami: {filteredContracts.reduce((s,c)=>s+(c.amount||0),0).toLocaleString()} so'm</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ─── ORGANIZATIONS ─── */}
+          {tab==='organizations' && (
+            <div className="space-y-4">
+              {orgs.length===0 ? (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-16 text-center">
+                  <div className="text-5xl mb-4">🏢</div>
+                  <p className="text-gray-400 font-medium">Tashkilot qo'shilmagan</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {orgs.map(org => (
+                    <div key={org.id} className={`bg-gray-900 border rounded-xl p-5 transition cursor-pointer ${activeOrg?.id===org.id?'border-blue-600':'border-gray-800 hover:border-gray-700'}`}
+                      onClick={()=>setActiveOrg(org)}>
+                      <div className="flex items-start gap-4 mb-4">
+                        <div className="w-12 h-12 bg-purple-900 rounded-xl flex items-center justify-center text-purple-300 font-bold text-xl flex-shrink-0">
+                          {org.name[0]?.toUpperCase()}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-semibold text-white">{org.name}</h3>
+                            {activeOrg?.id===org.id && <span className="text-xs bg-blue-900 text-blue-300 px-2 py-0.5 rounded-full">Faol</span>}
+                          </div>
+                          <p className="text-xs text-gray-500 mt-0.5">INN: {org.inn||'—'}</p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-y-2 gap-x-4 text-xs mb-4">
+                        {[['Rahbar',org.director_name],['Bank',org.bank_name],['Hisob raqam',org.bank_account],['MFO',org.mfo]].map(([l,v])=>(
+                          <div key={l}><span className="text-gray-500">{l}: </span><span className="text-gray-300">{v||'—'}</span></div>
+                        ))}
+                        <div className="col-span-2"><span className="text-gray-500">Manzil: </span><span className="text-gray-300">{org.address||'—'}</span></div>
+                      </div>
+
+                      {/* Bank accounts section */}
+                      {activeOrg?.id===org.id && (
+                        <div className="border-t border-gray-800 pt-4 mt-2">
+                          <div className="flex justify-between items-center mb-3">
+                            <span className="text-xs text-gray-400 font-medium uppercase tracking-wider">Bank hisob raqamlari</span>
+                            <button onClick={e=>{e.stopPropagation();setModal('bankAccount')}}
+                              className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                              + Qo'shish
+                            </button>
+                          </div>
+                          {bankAccounts.length===0 ? (
+                            <p className="text-xs text-gray-600">Hisob raqam qo'shilmagan</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {bankAccounts.map(ba => (
+                                <div key={ba.id} className="flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2.5" onClick={e=>e.stopPropagation()}>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm text-white font-mono">{ba.account_number}</span>
+                                      {ba.is_default && <span className="text-xs bg-emerald-900 text-emerald-300 px-1.5 py-0.5 rounded">Asosiy</span>}
+                                    </div>
+                                    <div className="text-xs text-gray-400 mt-0.5">{ba.bank_name} | MFO: {ba.mfo||'—'}</div>
+                                  </div>
+                                  <button onClick={()=>deleteBankAccount(ba.id)}
+                                    className="text-red-500 hover:text-red-400 text-xs p-1">🗑</button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Stamp & Signature */}
+                          <div className="border-t border-gray-800 pt-4 mt-4">
+                            <span className="text-xs text-gray-400 font-medium uppercase tracking-wider">Imzo va Muhr</span>
+                            <div className="grid grid-cols-2 gap-3 mt-3">
+                              <div>
+                                <div className="text-xs text-gray-500 mb-2">Imzo rasmi</div>
+                                {org.signature_url ? (
+                                  <div className="relative group">
+                                    <img src={org.signature_url} alt="Imzo" className="h-16 object-contain bg-white rounded-lg p-1"/>
+                                    <button onClick={()=>signatureRef.current?.click()} className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 rounded-lg text-xs text-white transition flex items-center justify-center">
+                                      O'zgartirish
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button onClick={()=>signatureRef.current?.click()}
+                                    className="w-full h-16 border-2 border-dashed border-gray-700 rounded-lg text-xs text-gray-500 hover:border-blue-600 hover:text-blue-400 transition flex items-center justify-center gap-2">
+                                    📤 Yuklash
+                                  </button>
+                                )}
+                                <input ref={signatureRef} type="file" accept="image/*" className="hidden"
+                                  onChange={e=>{if(e.target.files?.[0]) uploadImage(e.target.files[0],'signature_url')}}/>
+                              </div>
+                              <div>
+                                <div className="text-xs text-gray-500 mb-2">Muhr rasmi</div>
+                                {org.stamp_url ? (
+                                  <div className="relative group">
+                                    <img src={org.stamp_url} alt="Muhr" className="h-16 object-contain bg-white rounded-lg p-1"/>
+                                    <button onClick={()=>stampRef.current?.click()} className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 rounded-lg text-xs text-white transition flex items-center justify-center">
+                                      O'zgartirish
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button onClick={()=>stampRef.current?.click()}
+                                    className="w-full h-16 border-2 border-dashed border-gray-700 rounded-lg text-xs text-gray-500 hover:border-blue-600 hover:text-blue-400 transition flex items-center justify-center gap-2">
+                                    📤 Yuklash
+                                  </button>
+                                )}
+                                <input ref={stampRef} type="file" accept="image/*" className="hidden"
+                                  onChange={e=>{if(e.target.files?.[0]) uploadImage(e.target.files[0],'stamp_url')}}/>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ─── COUNTERPARTIES ─── */}
+          {tab==='counterparties' && (
+            <div className="space-y-4">
+              <div className="relative">
+                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+                <input value={cpSearch} onChange={e=>setCpSearch(e.target.value)}
+                  placeholder="Tashkilot nomi yoki STR (INN) raqami bo'yicha qidirish..."
+                  className="w-full bg-gray-900 border border-gray-800 text-white rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+              </div>
+
+              {filteredCps.length===0 ? (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-16 text-center">
+                  <div className="text-5xl mb-4">🤝</div>
+                  <p className="text-gray-400 font-medium">{cpSearch ? 'Kontragent topilmadi' : "Kontragent qo'shilmagan"}</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {filteredCps.map(cp => (
+                    <div key={cp.id} className="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-xl p-5 transition">
+                      <div className="flex items-start gap-4 mb-4">
+                        <div className="w-11 h-11 bg-orange-900 rounded-xl flex items-center justify-center text-orange-300 font-bold text-xl flex-shrink-0">
+                          {cp.name[0]?.toUpperCase()}
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-white">{cp.name}</h3>
+                          <p className="text-xs text-gray-500 mt-0.5 font-mono">STR: {cp.inn||'—'}</p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-y-2 gap-x-4 text-xs">
+                        {[['Rahbar',cp.director_name],['Bank',cp.bank_name],['Hisob raqam',cp.bank_account],['MFO',cp.mfo]].map(([l,v])=>(
+                          <div key={l}><span className="text-gray-500">{l}: </span><span className="text-gray-300">{v||'—'}</span></div>
+                        ))}
+                        <div className="col-span-2"><span className="text-gray-500">Manzil: </span><span className="text-gray-300">{cp.address||'—'}</span></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ─── PROFILE ─── */}
+          {tab==='profile' && (
+            <div className="max-w-2xl space-y-6">
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 flex items-center gap-5">
+                <div className="w-16 h-16 bg-blue-700 rounded-2xl flex items-center justify-center text-2xl font-bold flex-shrink-0">
+                  {userEmail[0]?.toUpperCase()}
+                </div>
+                <div>
+                  <div className="text-lg font-semibold text-white">{profile.full_name||'Ism kiritilmagan'}</div>
+                  <div className="text-sm text-gray-400 mt-0.5">{userEmail}</div>
+                  <div className="text-xs text-gray-600 mt-1">{profile.phone||'Telefon kiritilmagan'}</div>
+                </div>
+              </div>
+
+              <form onSubmit={saveProfile} className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Shaxsiy ma'lumotlar</h2>
+                <div className="grid grid-cols-2 gap-4">
+                  <div><label className={lbl}>To'liq ism</label>
+                    <input className={inp} placeholder="Alisher Karimov" value={profile.full_name} onChange={e=>setProfile({...profile,full_name:e.target.value})}/></div>
+                  <div><label className={lbl}>Telefon</label>
+                    <input className={inp} placeholder="+998901234567" value={profile.phone} onChange={e=>setProfile({...profile,phone:e.target.value})}/></div>
+                </div>
+                {profileMsg && <div className="bg-emerald-900/40 border border-emerald-700 text-emerald-300 text-sm px-4 py-2.5 rounded-lg">{profileMsg}</div>}
+                <button type="submit" disabled={profileSaving}
+                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-semibold transition">
+                  {profileSaving?'Saqlanmoqda...':'Saqlash'}
+                </button>
+              </form>
+
+              <form onSubmit={changePassword} className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Parolni o'zgartirish</h2>
+                <div><label className={lbl}>Yangi parol</label>
+                  <input type="password" className={inp} placeholder="Kamida 8 belgi" value={newPassword} onChange={e=>setNewPassword(e.target.value)}/></div>
+                {pwdMsg && <div className={`text-sm px-4 py-2.5 rounded-lg ${pwdMsg.includes('✓')?'bg-emerald-900/40 border border-emerald-700 text-emerald-300':'bg-red-900/40 border border-red-700 text-red-300'}`}>{pwdMsg}</div>}
+                <button type="submit" className="w-full border border-gray-700 text-gray-300 hover:bg-gray-800 py-2.5 rounded-lg text-sm font-medium transition">
+                  Parolni o'zgartirish
+                </button>
+              </form>
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* ─── MODALS ─── */}
+
+      {modal==='org' && (
+        <Modal title="Tashkilot qo'shish" onClose={()=>setModal(null)}>
+          <form onSubmit={saveOrg} className="space-y-4">
+            <div><label className={lbl}>Tashkilot nomi *</label>
+              <input className={inp} required placeholder="Alfa Texnologiya MChJ" value={orgForm.name} onChange={e=>setOrgForm({...orgForm,name:e.target.value})}/></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className={lbl}>STR (INN)</label>
+                <input className={inp} placeholder="123456789" value={orgForm.inn} onChange={e=>setOrgForm({...orgForm,inn:e.target.value})}/></div>
+              <div><label className={lbl}>Rahbar ismi</label>
+                <input className={inp} placeholder="F.I.O" value={orgForm.director_name} onChange={e=>setOrgForm({...orgForm,director_name:e.target.value})}/></div>
+              <div><label className={lbl}>Bank nomi</label>
+                <input className={inp} placeholder="Xalq banki" value={orgForm.bank_name} onChange={e=>setOrgForm({...orgForm,bank_name:e.target.value})}/></div>
+              <div><label className={lbl}>Hisob raqami</label>
+                <input className={inp} placeholder="20208000..." value={orgForm.bank_account} onChange={e=>setOrgForm({...orgForm,bank_account:e.target.value})}/></div>
+              <div><label className={lbl}>MFO</label>
+                <input className={inp} placeholder="00873" value={orgForm.mfo} onChange={e=>setOrgForm({...orgForm,mfo:e.target.value})}/></div>
+              <div><label className={lbl}>Manzil</label>
+                <input className={inp} placeholder="Toshkent, ..." value={orgForm.address} onChange={e=>setOrgForm({...orgForm,address:e.target.value})}/></div>
+            </div>
+            <ModalActions onClose={()=>setModal(null)} saving={saving}/>
+          </form>
+        </Modal>
+      )}
+
+      {modal==='cp' && (
+        <Modal title="Kontragent qo'shish" onClose={()=>setModal(null)}>
+          <form onSubmit={saveCp} className="space-y-4">
+            <div><label className={lbl}>Tashkilot nomi *</label>
+              <input className={inp} required placeholder="Beta Qurilish MChJ" value={cpForm.name} onChange={e=>setCpForm({...cpForm,name:e.target.value})}/></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className={lbl}>STR (INN)</label>
+                <input className={inp} placeholder="123456789" value={cpForm.inn} onChange={e=>setCpForm({...cpForm,inn:e.target.value})}/></div>
+              <div><label className={lbl}>Rahbar ismi</label>
+                <input className={inp} placeholder="F.I.O" value={cpForm.director_name} onChange={e=>setCpForm({...cpForm,director_name:e.target.value})}/></div>
+              <div><label className={lbl}>Bank nomi</label>
+                <input className={inp} placeholder="Ipoteka banki" value={cpForm.bank_name} onChange={e=>setCpForm({...cpForm,bank_name:e.target.value})}/></div>
+              <div><label className={lbl}>Hisob raqami</label>
+                <input className={inp} placeholder="20208000..." value={cpForm.bank_account} onChange={e=>setCpForm({...cpForm,bank_account:e.target.value})}/></div>
+              <div><label className={lbl}>MFO</label>
+                <input className={inp} placeholder="00869" value={cpForm.mfo} onChange={e=>setCpForm({...cpForm,mfo:e.target.value})}/></div>
+              <div><label className={lbl}>Manzil</label>
+                <input className={inp} placeholder="Samarqand, ..." value={cpForm.address} onChange={e=>setCpForm({...cpForm,address:e.target.value})}/></div>
+            </div>
+            <ModalActions onClose={()=>setModal(null)} saving={saving}/>
+          </form>
+        </Modal>
+      )}
+
+      {modal==='bankAccount' && (
+        <Modal title="Bank hisob raqami qo'shish" onClose={()=>setModal(null)}>
+          <form onSubmit={saveBankAccount} className="space-y-4">
+            <div><label className={lbl}>Bank nomi *</label>
+              <input className={inp} required placeholder="Xalq banki" value={bankForm.bank_name} onChange={e=>setBankForm({...bankForm,bank_name:e.target.value})}/></div>
+            <div><label className={lbl}>Hisob raqami *</label>
+              <input className={inp} required placeholder="20208000000000000000" value={bankForm.account_number} onChange={e=>setBankForm({...bankForm,account_number:e.target.value})}/></div>
+            <div><label className={lbl}>MFO</label>
+              <input className={inp} placeholder="00873" value={bankForm.mfo} onChange={e=>setBankForm({...bankForm,mfo:e.target.value})}/></div>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" checked={bankForm.is_default} onChange={e=>setBankForm({...bankForm,is_default:e.target.checked})}
+                className="w-4 h-4 accent-blue-500"/>
+              <span className="text-sm text-gray-300">Asosiy hisob raqam sifatida belgilash</span>
+            </label>
+            <ModalActions onClose={()=>setModal(null)} saving={saving}/>
+          </form>
+        </Modal>
+      )}
+
+      {modal==='contract' && (
+        <Modal title="Shartnoma yaratish" onClose={()=>setModal(null)} wide>
+          <form onSubmit={saveContract} className="space-y-5">
+            <div className="grid grid-cols-2 gap-4">
+              <div><label className={lbl}>Shartnoma raqami *</label>
+                <input className={inp} required placeholder="2026/001" value={contractForm.contract_number} onChange={e=>setContractForm({...contractForm,contract_number:e.target.value})}/></div>
+              <div><label className={lbl}>Sana *</label>
+                <input type="date" className={inp} required value={contractForm.contract_date} onChange={e=>setContractForm({...contractForm,contract_date:e.target.value})}/></div>
+              <div className="col-span-2"><label className={lbl}>Shartnoma turi</label>
+                <select className={inp} value={contractForm.contract_type} onChange={e=>setContractForm({...contractForm,contract_type:e.target.value})}>
+                  {Object.entries(CONTRACT_TYPES).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+                </select>
+              </div>
+              <div><label className={lbl}>Summa (so'm)</label>
+                <input type="number" className={inp} placeholder="5000000" value={contractForm.amount} onChange={e=>setContractForm({...contractForm,amount:e.target.value})}/></div>
+              <div><label className={lbl}>Holat</label>
+                <select className={inp} value={contractForm.status} onChange={e=>setContractForm({...contractForm,status:e.target.value})}>
+                  <option value="draft">Qoralama</option>
+                  <option value="active">Faol</option>
+                  <option value="completed">Bajarilgan</option>
+                  <option value="cancelled">Bekor qilingan</option>
+                </select>
+              </div>
+            </div>
+            <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-3">
+              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Tomonlar</p>
+              <div><label className={lbl}>Buyurtmachi (sizning tashkilotingiz) *</label>
+                <select className={inp} required value={contractForm.organization_id} onChange={e=>setContractForm({...contractForm,organization_id:e.target.value})}>
+                  <option value="">— Tashkilot tanlang —</option>
+                  {orgs.map(o=><option key={o.id} value={o.id}>{o.name} {o.inn?`(STR: ${o.inn})`:''}</option>)}
+                </select>
+                {orgs.length===0 && <p className="text-xs text-yellow-500 mt-1">⚠ Avval tashkilot qo'shing</p>}
+              </div>
+              <div><label className={lbl}>Ijrochi (kontragent) *</label>
+                <select className={inp} required value={contractForm.counterparty_id} onChange={e=>setContractForm({...contractForm,counterparty_id:e.target.value})}>
+                  <option value="">— Kontragent tanlang —</option>
+                  {cps.map(c=><option key={c.id} value={c.id}>{c.name} {c.inn?`(STR: ${c.inn})`:''}</option>)}
+                </select>
+                {cps.length===0 && <p className="text-xs text-yellow-500 mt-1">⚠ Avval kontragent qo'shing</p>}
+              </div>
+            </div>
+            <ModalActions onClose={()=>setModal(null)} saving={saving}/>
+          </form>
+        </Modal>
+      )}
+
+      {modal==='viewContract' && viewContract && (
+        <Modal title={`Shartnoma #${viewContract.contract_number}`} onClose={()=>setModal(null)} wide>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                ['Raqam',`#${viewContract.contract_number}`],
+                ['Sana',viewContract.contract_date],
+                ['Tur',CONTRACT_TYPES[viewContract.contract_type]],
+                ['Summa',`${viewContract.amount?.toLocaleString()} so'm`],
+                ['Holat',STATUSES[viewContract.status as keyof typeof STATUSES]?.label],
+              ].map(([l,v])=>(
+                <div key={l} className="bg-gray-800 rounded-lg p-3">
+                  <div className="text-xs text-gray-500 mb-1">{l}</div>
+                  <div className="text-white font-medium text-sm">{v}</div>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {viewContract.organizations && (
+                <div className="bg-gray-800 rounded-xl p-4">
+                  <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Buyurtmachi</div>
+                  <div className="text-white font-semibold text-sm">{viewContract.organizations.name}</div>
+                  <div className="text-gray-400 text-xs mt-1 space-y-0.5">
+                    <div>STR: {viewContract.organizations.inn}</div>
+                    <div>Rahbar: {viewContract.organizations.director_name}</div>
+                    <div>Bank: {viewContract.organizations.bank_name}</div>
+                  </div>
+                </div>
+              )}
+              {viewContract.counterparties && (
+                <div className="bg-gray-800 rounded-xl p-4">
+                  <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">Ijrochi</div>
+                  <div className="text-white font-semibold text-sm">{viewContract.counterparties.name}</div>
+                  <div className="text-gray-400 text-xs mt-1 space-y-0.5">
+                    <div>STR: {viewContract.counterparties.inn}</div>
+                    <div>Rahbar: {viewContract.counterparties.director_name}</div>
+                    <div>Bank: {viewContract.counterparties.bank_name}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <button onClick={()=>copyContract(viewContract)}
+                className="flex-1 bg-blue-800 hover:bg-blue-700 text-white py-2.5 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2">
+                📋 Nusxa olish
+              </button>
+              <button onClick={()=>generatePDF(viewContract)}
+                className="flex-1 bg-emerald-700 hover:bg-emerald-600 text-white py-2.5 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-2">
+                📥 PDF yuklab olish
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {modal==='upgrade' && (
+        <Modal title="Tarifni yaxshilash" onClose={()=>setModal(null)}>
+          <div className="space-y-4 text-center">
+            <div className="text-5xl">⚡</div>
+            <p className="text-gray-300">Bepul tarif limitiga yetdingiz <strong className="text-white">({FREE_LIMIT} ta/oy)</strong></p>
+            <div className="bg-gray-800 rounded-xl p-5 text-left space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="font-semibold text-white">Standart tarif</span>
+                <span className="text-blue-400 font-bold text-lg">50,000 so'm/oy</span>
+              </div>
+              <ul className="text-sm text-gray-400 space-y-1.5">
+                <li className="flex items-center gap-2"><span className="text-emerald-400">✓</span> Cheksiz shartnomalar</li>
+                <li className="flex items-center gap-2"><span className="text-emerald-400">✓</span> Reklama belgisisiz PDF</li>
+                <li className="flex items-center gap-2"><span className="text-emerald-400">✓</span> Barcha shartnoma turlari</li>
+                <li className="flex items-center gap-2"><span className="text-emerald-400">✓</span> Imzo va muhr avtomatik</li>
+              </ul>
+            </div>
+            <div className="bg-gray-800 rounded-xl p-4 text-sm text-gray-400 text-left">
+              <p className="font-medium text-white mb-2">To'lov qilish uchun:</p>
+              <p>Bank orqali pul o'tkazing, xabar yuboring — 24 soat ichida faollashtiramiz.</p>
+            </div>
+            <button onClick={()=>setModal(null)}
+              className="w-full border border-gray-700 text-gray-300 hover:bg-gray-800 py-2.5 rounded-lg text-sm transition">
+              Yopish
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+function Modal({ title, onClose, children, wide }: {
+  title: string; onClose: ()=>void; children: React.ReactNode; wide?: boolean
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className={`bg-gray-900 border border-gray-800 rounded-2xl w-full ${wide?'max-w-2xl':'max-w-lg'} max-h-[90vh] flex flex-col shadow-2xl`}>
+        <div className="flex justify-between items-center px-6 py-4 border-b border-gray-800 flex-shrink-0">
+          <h2 className="text-base font-semibold text-white">{title}</h2>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition text-xl">×</button>
+        </div>
+        <div className="overflow-y-auto p-6">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+function ModalActions({ onClose, saving }: { onClose: ()=>void; saving: boolean }) {
+  return (
+    <div className="flex gap-3 pt-2">
+      <button type="button" onClick={onClose} className="flex-1 border border-gray-700 text-gray-300 py-2.5 rounded-lg text-sm hover:bg-gray-800 transition">
+        Bekor qilish
+      </button>
+      <button type="submit" disabled={saving} className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-semibold transition">
+        {saving?'Saqlanmoqda...':'Saqlash'}
+      </button>
+    </div>
+  )
+}
