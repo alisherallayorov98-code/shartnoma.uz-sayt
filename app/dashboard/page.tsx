@@ -3,6 +3,8 @@
 import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { CONTRACT_TEMPLATES, CONTRACT_TYPE_NAMES, fillTemplate } from '@/lib/contractTemplates'
+import { getStructure, structureToText, numberToWords, ContractStructure } from '@/lib/contractStructures'
 
 // ─── Types ───────────────────────────────────────────────
 type Org = {
@@ -23,6 +25,7 @@ type Contract = {
   contract_type: string; amount: number; status: string
   organization_id: string; counterparty_id: string
   organizations?: Org; counterparties?: Counterparty; created_at: string
+  content?: string; city?: string; product_name?: string
 }
 type Subscription = {
   id: string; organization_id: string; plan: string
@@ -83,7 +86,8 @@ export default function DashboardPage() {
   const emptyCp  = { name:'', inn:'', director_name:'', bank_name:'', bank_account:'', mfo:'', address:'' }
   const emptyContract = {
     contract_number:'', contract_date: new Date().toISOString().split('T')[0],
-    contract_type:'oldi_sotdi', amount:'', organization_id:'', counterparty_id:'', status:'draft'
+    contract_type:'oldi_sotdi', amount:'', organization_id:'', counterparty_id:'',
+    status:'draft', content:'', city:'Toshkent', product_name:''
   }
   const emptyBank = { bank_name:'', account_number:'', mfo:'', is_default: false }
 
@@ -218,8 +222,19 @@ export default function DashboardPage() {
     if (!canCreateContract()) { setModal('upgrade'); return }
     setSaving(true)
     const { data: { session } } = await supabase.auth.getSession()
-    await supabase.from('contracts').insert({ ...contractForm, amount: parseFloat(contractForm.amount)||0, user_id: session!.user.id })
-    // Increment usage
+    await supabase.from('contracts').insert({
+      contract_number: contractForm.contract_number,
+      contract_date: contractForm.contract_date,
+      contract_type: contractForm.contract_type,
+      amount: parseFloat(contractForm.amount)||0,
+      organization_id: contractForm.organization_id,
+      counterparty_id: contractForm.counterparty_id,
+      status: contractForm.status,
+      content: contractForm.content,
+      city: contractForm.city,
+      product_name: contractForm.product_name || null,
+      user_id: session!.user.id
+    })
     if (subscription) {
       await supabase.from('subscriptions').update({ contracts_used: subscription.contracts_used + 1 }).eq('id', subscription.id)
     }
@@ -297,51 +312,95 @@ export default function DashboardPage() {
   async function generatePDF(c: Contract) {
     const { jsPDF } = await import('jspdf')
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-    const t = (text: string, x: number, y: number, size = 11) => { doc.setFontSize(size); doc.text(String(text||''), x, y) }
-    doc.setFillColor(30, 41, 59); doc.rect(0, 0, 210, 40, 'F')
-    doc.setTextColor(255, 255, 255)
-    t('SHARTNOMA', 105, 16, 22); doc.setFont('helvetica','normal')
-    t(`№ ${c.contract_number}   |   Sana: ${c.contract_date}`, 105, 27, 10)
-    t(CONTRACT_TYPES[c.contract_type] || c.contract_type, 105, 34, 9)
-    doc.setTextColor(0,0,0)
-    doc.setDrawColor(220,220,220)
-    doc.rect(10, 48, 90, 75); doc.rect(110, 48, 90, 75)
-    doc.setFontSize(8); doc.setTextColor(100,100,100)
-    doc.text('BUYURTMACHI', 55, 54, {align:'center'})
-    doc.text('IJROCHI', 155, 54, {align:'center'})
-    doc.setTextColor(0,0,0)
-    if (c.organizations) {
-      const o = c.organizations
-      t(o.name, 13, 62, 9)
-      t(`INN: ${o.inn||'—'}`, 13, 70, 8)
-      t(`Rahbar: ${o.director_name||'—'}`, 13, 78, 8)
-      t(`Bank: ${o.bank_name||'—'}`, 13, 86, 8)
-      t(`H/r: ${o.bank_account||'—'}`, 13, 94, 8)
-      t(`MFO: ${o.mfo||'—'}`, 13, 102, 8)
-      t(`Manzil: ${o.address||'—'}`, 13, 110, 7)
+    const margin = 20
+    const pageW = 210
+    const pageH = 297
+    const contentW = pageW - margin * 2
+
+    // Shartnoma matni bor bo'lsa — to'liq matn PDF
+    const content = c.content || ''
+
+    if (content) {
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(10)
+      doc.setTextColor(20, 20, 20)
+
+      const lines = doc.splitTextToSize(content, contentW)
+      let y = margin
+      const lineHeight = 5.5
+
+      for (let i = 0; i < lines.length; i++) {
+        if (y + lineHeight > pageH - margin) {
+          doc.addPage()
+          y = margin
+        }
+        const line = lines[i] as string
+        // Sarlavhalarni qalin qilish
+        if (
+          line.match(/^[A-Z\s]{5,}$/) ||
+          line.match(/^\d+\.\s[A-Z]/) ||
+          line.includes('SHARTNOMA') ||
+          line.includes('REKVIZIT')
+        ) {
+          doc.setFont('helvetica', 'bold')
+          doc.setFontSize(10)
+        } else {
+          doc.setFont('helvetica', 'normal')
+          doc.setFontSize(9.5)
+        }
+        doc.text(line, margin, y)
+        y += lineHeight
+      }
+
+      // Pastki qism
+      const lastPage = doc.getNumberOfPages()
+      doc.setPage(lastPage)
+      doc.setFontSize(7)
+      doc.setTextColor(180, 180, 180)
+      doc.text('Shartnoma.uz — Online shartnoma generatori', pageW / 2, pageH - 8, { align: 'center' })
+
+    } else {
+      // Eski format — matn yo'q bo'lsa
+      const t = (text: string, x: number, y: number, size = 11) => {
+        doc.setFontSize(size); doc.text(String(text||''), x, y)
+      }
+      doc.setFillColor(30, 41, 59); doc.rect(0, 0, 210, 40, 'F')
+      doc.setTextColor(255, 255, 255)
+      doc.setFont('helvetica','bold')
+      t('SHARTNOMA', 105, 16, 20)
+      doc.setFont('helvetica','normal')
+      t(`№ ${c.contract_number}  |  ${c.contract_date}`, 105, 27, 10)
+      doc.setTextColor(0,0,0)
+      doc.setDrawColor(200,200,200)
+      doc.rect(10, 48, 90, 65); doc.rect(110, 48, 90, 65)
+      doc.setFontSize(8); doc.setTextColor(100,100,100)
+      doc.text('BUYURTMACHI', 55, 54, {align:'center'})
+      doc.text('IJROCHI', 155, 54, {align:'center'})
+      doc.setTextColor(0,0,0)
+      if (c.organizations) {
+        const o = c.organizations
+        t(o.name, 13, 62, 9); t(`INN: ${o.inn||'—'}`, 13, 70, 8)
+        t(`Rahbar: ${o.director_name||'—'}`, 13, 78, 8)
+        t(`Bank: ${o.bank_name||'—'}`, 13, 86, 8)
+        t(`H/r: ${o.bank_account||'—'}`, 13, 94, 8)
+        t(`MFO: ${o.mfo||'—'}`, 13, 102, 8)
+      }
+      if (c.counterparties) {
+        const cp = c.counterparties
+        t(cp.name, 113, 62, 9); t(`INN: ${cp.inn||'—'}`, 113, 70, 8)
+        t(`Rahbar: ${cp.director_name||'—'}`, 113, 78, 8)
+        t(`Bank: ${cp.bank_name||'—'}`, 113, 86, 8)
+        t(`H/r: ${cp.bank_account||'—'}`, 113, 94, 8)
+        t(`MFO: ${cp.mfo||'—'}`, 113, 102, 8)
+      }
+      doc.line(10, 122, 200, 122)
+      t(`Tur: ${CONTRACT_TYPE_NAMES[c.contract_type as keyof typeof CONTRACT_TYPE_NAMES]||c.contract_type}`, 10, 132, 9)
+      if (c.product_name) t(`Mahsulot/xizmat: ${c.product_name}`, 10, 140, 9)
+      t(`Summa: ${c.amount?.toLocaleString()} so'm`, 10, c.product_name ? 148 : 142, 9)
+      doc.setFontSize(7); doc.setTextColor(180,180,180)
+      doc.text('Shartnoma.uz', 105, 287, {align:'center'})
     }
-    if (c.counterparties) {
-      const cp = c.counterparties
-      t(cp.name, 113, 62, 9)
-      t(`INN: ${cp.inn||'—'}`, 113, 70, 8)
-      t(`Rahbar: ${cp.director_name||'—'}`, 113, 78, 8)
-      t(`Bank: ${cp.bank_name||'—'}`, 113, 86, 8)
-      t(`H/r: ${cp.bank_account||'—'}`, 113, 94, 8)
-      t(`MFO: ${cp.mfo||'—'}`, 113, 102, 8)
-      t(`Manzil: ${cp.address||'—'}`, 113, 110, 7)
-    }
-    doc.setDrawColor(220,220,220); doc.line(10, 132, 200, 132)
-    t('Shartnoma shartlari', 10, 141, 11)
-    t(`Shartnoma turi: ${CONTRACT_TYPES[c.contract_type]||c.contract_type}`, 10, 151, 9)
-    t(`Shartnoma summasi: ${c.amount?.toLocaleString()} so'm`, 10, 159, 9)
-    t(`Holat: ${STATUSES[c.status as keyof typeof STATUSES]?.label}`, 10, 167, 9)
-    doc.setDrawColor(200,200,200)
-    doc.line(15, 240, 90, 240); doc.line(120, 240, 195, 240)
-    t('Buyurtmachi', 52, 247, 8); t('Ijrochi', 157, 247, 8)
-    t('________________', 15, 248, 9); t('________________', 120, 248, 9)
-    t('M.O.', 15, 258, 8); t('M.O.', 120, 258, 8)
-    doc.setFontSize(7); doc.setTextColor(180,180,180)
-    doc.text('Shartnoma.uz — Online shartnoma generatori', 105, 287, {align:'center'})
+
     doc.save(`shartnoma-${c.contract_number.replace(/\//g,'-')}.pdf`)
   }
 
@@ -955,49 +1014,17 @@ export default function DashboardPage() {
       )}
 
       {modal==='contract' && (
-        <Modal title="Shartnoma yaratish" onClose={()=>setModal(null)} wide>
-          <form onSubmit={saveContract} className="space-y-5">
-            <div className="grid grid-cols-2 gap-4">
-              <div><label className={lbl}>Shartnoma raqami *</label>
-                <input className={inp} required placeholder="2026/001" value={contractForm.contract_number} onChange={e=>setContractForm({...contractForm,contract_number:e.target.value})}/></div>
-              <div><label className={lbl}>Sana *</label>
-                <input type="date" className={inp} required value={contractForm.contract_date} onChange={e=>setContractForm({...contractForm,contract_date:e.target.value})}/></div>
-              <div className="col-span-2"><label className={lbl}>Shartnoma turi</label>
-                <select className={inp} value={contractForm.contract_type} onChange={e=>setContractForm({...contractForm,contract_type:e.target.value})}>
-                  {Object.entries(CONTRACT_TYPES).map(([k,v])=><option key={k} value={k}>{v}</option>)}
-                </select>
-              </div>
-              <div><label className={lbl}>Summa (so'm)</label>
-                <input type="number" className={inp} placeholder="5000000" value={contractForm.amount} onChange={e=>setContractForm({...contractForm,amount:e.target.value})}/></div>
-              <div><label className={lbl}>Holat</label>
-                <select className={inp} value={contractForm.status} onChange={e=>setContractForm({...contractForm,status:e.target.value})}>
-                  <option value="draft">Qoralama</option>
-                  <option value="active">Faol</option>
-                  <option value="completed">Bajarilgan</option>
-                  <option value="cancelled">Bekor qilingan</option>
-                </select>
-              </div>
-            </div>
-            <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-3">
-              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Tomonlar</p>
-              <div><label className={lbl}>Buyurtmachi (sizning tashkilotingiz) *</label>
-                <select className={inp} required value={contractForm.organization_id} onChange={e=>setContractForm({...contractForm,organization_id:e.target.value})}>
-                  <option value="">— Tashkilot tanlang —</option>
-                  {orgs.map(o=><option key={o.id} value={o.id}>{o.name} {o.inn?`(STR: ${o.inn})`:''}</option>)}
-                </select>
-                {orgs.length===0 && <p className="text-xs text-yellow-500 mt-1">⚠ Avval tashkilot qo'shing</p>}
-              </div>
-              <div><label className={lbl}>Ijrochi (kontragent) *</label>
-                <select className={inp} required value={contractForm.counterparty_id} onChange={e=>setContractForm({...contractForm,counterparty_id:e.target.value})}>
-                  <option value="">— Kontragent tanlang —</option>
-                  {cps.map(c=><option key={c.id} value={c.id}>{c.name} {c.inn?`(STR: ${c.inn})`:''}</option>)}
-                </select>
-                {cps.length===0 && <p className="text-xs text-yellow-500 mt-1">⚠ Avval kontragent qo'shing</p>}
-              </div>
-            </div>
-            <ModalActions onClose={()=>setModal(null)} saving={saving}/>
-          </form>
-        </Modal>
+        <ContractModal
+          orgs={orgs}
+          cps={cps}
+          form={contractForm}
+          setForm={setContractForm}
+          onSave={saveContract}
+          onClose={()=>setModal(null)}
+          saving={saving}
+          inp={inp}
+          lbl={lbl}
+        />
       )}
 
       {modal==='viewContract' && viewContract && (
@@ -1112,6 +1139,399 @@ function ModalActions({ onClose, saving }: { onClose: ()=>void; saving: boolean 
       <button type="submit" disabled={saving} className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-semibold transition">
         {saving?'Saqlanmoqda...':'Saqlash'}
       </button>
+    </div>
+  )
+}
+
+// ─── Contract Modal ───────────────────────────────────────
+function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp, lbl }: {
+  orgs: Org[]; cps: Counterparty[]
+  form: any; setForm: (f: any) => void
+  onSave: (e: React.FormEvent) => void
+  onClose: () => void; saving: boolean
+  inp: string; lbl: string
+}) {
+  const [step, setStep] = useState<1|2>(1)
+  const [useTemplate, setUseTemplate] = useState(true)
+  const [structure, setStructure] = useState<ContractStructure>({ bolimlar: [] })
+
+  function buildOrgCp(f: any) {
+    const org = orgs.find(o => o.id === f.organization_id) || null
+    const cp  = cps.find(c => c.id === f.counterparty_id) || null
+    return { org, cp }
+  }
+
+  function syncToContent(s: ContractStructure, f: any) {
+    const { org, cp } = buildOrgCp(f)
+    const typeName = CONTRACT_TYPE_NAMES[f.contract_type as keyof typeof CONTRACT_TYPE_NAMES] || f.contract_type
+    const text = structureToText(s, {
+      type_name: typeName,
+      number: f.contract_number,
+      date: f.contract_date,
+      city: f.city || 'Toshkent',
+      org, cp,
+    })
+    setForm({ ...f, content: text })
+  }
+
+  function applyStructure(s: ContractStructure) {
+    setStructure(s)
+    syncToContent(s, form)
+  }
+
+  const EMPTY_STRUCTURE: ContractStructure = { bolimlar: [{ sarlavha: '', bandlar: [{ matn: '' }] }] }
+
+  function goToStep2() {
+    if (useTemplate) {
+      const { org, cp } = buildOrgCp(form)
+      const amount = parseFloat(form.amount) || 0
+      const tplData = {
+        contract_number: form.contract_number,
+        contract_date: form.contract_date,
+        city: form.city || 'Toshkent',
+        org_name: org?.name, org_inn: org?.inn, org_director: org?.director_name,
+        cp_name: cp?.name, cp_inn: cp?.inn, cp_director: cp?.director_name,
+        amount, amount_text: numberToWords(amount),
+      }
+      const s = getStructure(form.contract_type, tplData)
+      setStructure(s)
+      const typeName = CONTRACT_TYPE_NAMES[form.contract_type as keyof typeof CONTRACT_TYPE_NAMES] || form.contract_type
+      const text = structureToText(s, {
+        type_name: typeName,
+        number: form.contract_number,
+        date: form.contract_date,
+        city: form.city || 'Toshkent',
+        org, cp,
+      })
+      setForm({ ...form, content: text })
+    } else {
+      setStructure(EMPTY_STRUCTURE)
+      setForm({ ...form, content: '' })
+    }
+    setStep(2)
+  }
+
+  function reloadStructure() {
+    const { org, cp } = buildOrgCp(form)
+    const amount = parseFloat(form.amount) || 0
+    const tplData = {
+      contract_number: form.contract_number,
+      contract_date: form.contract_date,
+      city: form.city || 'Toshkent',
+      org_name: org?.name, org_inn: org?.inn, org_director: org?.director_name,
+      cp_name: cp?.name, cp_inn: cp?.inn, cp_director: cp?.director_name,
+      amount, amount_text: numberToWords(amount),
+    }
+    const s = getStructure(form.contract_type, tplData)
+    applyStructure(s)
+  }
+
+  function handleFieldChange(field: string, value: string) {
+    setForm({ ...form, [field]: value })
+  }
+
+  function addBand(bi: number) {
+    applyStructure({
+      bolimlar: structure.bolimlar.map((b, i) =>
+        i === bi ? { ...b, bandlar: [...b.bandlar, { matn: '' }] } : b
+      )
+    })
+  }
+
+  function removeBand(bi: number, bdi: number) {
+    applyStructure({
+      bolimlar: structure.bolimlar.map((b, i) =>
+        i === bi ? { ...b, bandlar: b.bandlar.filter((_, j) => j !== bdi) } : b
+      )
+    })
+  }
+
+  function updateBand(bi: number, bdi: number, value: string) {
+    applyStructure({
+      bolimlar: structure.bolimlar.map((b, i) =>
+        i === bi ? { ...b, bandlar: b.bandlar.map((band, j) => j === bdi ? { matn: value } : band) } : b
+      )
+    })
+  }
+
+  function updateSarlavha(bi: number, value: string) {
+    applyStructure({
+      bolimlar: structure.bolimlar.map((b, i) => i === bi ? { ...b, sarlavha: value } : b)
+    })
+  }
+
+  function addBolim() {
+    applyStructure({
+      bolimlar: [...structure.bolimlar, { sarlavha: '', bandlar: [{ matn: '' }] }]
+    })
+  }
+
+  function removeBolim(bi: number) {
+    applyStructure({ bolimlar: structure.bolimlar.filter((_, i) => i !== bi) })
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl">
+
+        {/* Header */}
+        <div className="flex justify-between items-center px-6 py-4 border-b border-gray-800 flex-shrink-0">
+          <div className="flex items-center gap-4">
+            <h2 className="text-base font-semibold text-white">Shartnoma yaratish</h2>
+            <div className="flex gap-1 bg-gray-800 rounded-lg p-0.5">
+              <button type="button" onClick={() => setStep(1)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition ${step===1 ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
+                1. Ma&apos;lumotlar
+              </button>
+              <button type="button" onClick={goToStep2}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition ${step===2 ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
+                2. Bo&apos;limlar
+              </button>
+            </div>
+          </div>
+          <button type="button" onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition text-xl">×</button>
+        </div>
+
+        <form onSubmit={onSave} className="flex-1 overflow-hidden flex flex-col">
+          <div className="flex-1 overflow-y-auto p-6">
+
+            {/* ── 1-QADAM: Ma'lumotlar ── */}
+            {step === 1 && (
+              <div className="space-y-5">
+
+                {/* Raqam / Sana / Shahar */}
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className={lbl}>Shartnoma raqami *</label>
+                    <input className={inp} required placeholder="2026/001"
+                      value={form.contract_number}
+                      onChange={e => handleFieldChange('contract_number', e.target.value)}/>
+                  </div>
+                  <div>
+                    <label className={lbl}>Sana *</label>
+                    <input type="date" className={inp} required
+                      value={form.contract_date}
+                      onChange={e => handleFieldChange('contract_date', e.target.value)}/>
+                  </div>
+                  <div>
+                    <label className={lbl}>Shahar</label>
+                    <input className={inp} placeholder="Toshkent"
+                      value={form.city}
+                      onChange={e => handleFieldChange('city', e.target.value)}/>
+                  </div>
+                </div>
+
+                {/* Shartnoma turi — ixcham select */}
+                <div>
+                  <label className={lbl}>Shartnoma turi *</label>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {Object.entries(CONTRACT_TYPE_NAMES).map(([k,v]) => (
+                      <button key={k} type="button"
+                        onClick={() => handleFieldChange('contract_type', k)}
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition whitespace-nowrap ${
+                          form.contract_type === k
+                            ? 'border-blue-500 bg-blue-900/40 text-blue-300'
+                            : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white'
+                        }`}>
+                        {v}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Mahsulot/xizmat nomi + Summa + Holat */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className={lbl}>Mahsulot yoki xizmat nomi</label>
+                    <input className={inp} placeholder="Masalan: Qurilish materiallari yoki Dasturiy ta'minot yaratish"
+                      value={form.product_name || ''}
+                      onChange={e => handleFieldChange('product_name', e.target.value)}/>
+                  </div>
+                  <div>
+                    <label className={lbl}>Umumiy summa (so&apos;m)</label>
+                    <input type="number" className={inp} placeholder="5000000"
+                      value={form.amount}
+                      onChange={e => handleFieldChange('amount', e.target.value)}/>
+                  </div>
+                  <div>
+                    <label className={lbl}>Holat</label>
+                    <select className={inp} value={form.status}
+                      onChange={e => handleFieldChange('status', e.target.value)}>
+                      <option value="draft">Qoralama</option>
+                      <option value="active">Faol</option>
+                      <option value="completed">Bajarilgan</option>
+                      <option value="cancelled">Bekor qilingan</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Tomonlar */}
+                <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 space-y-3">
+                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Tomonlar</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={lbl}>Buyurtmachi *</label>
+                      <select className={inp} required value={form.organization_id}
+                        onChange={e => handleFieldChange('organization_id', e.target.value)}>
+                        <option value="">— Tashkilot tanlang —</option>
+                        {orgs.map(o => <option key={o.id} value={o.id}>{o.name}{o.inn ? ` (${o.inn})` : ''}</option>)}
+                      </select>
+                      {orgs.length===0 && <p className="text-xs text-yellow-500 mt-1">⚠ Avval tashkilot qo&apos;shing</p>}
+                    </div>
+                    <div>
+                      <label className={lbl}>Kontragent (2-tomon) *</label>
+                      <select className={inp} required value={form.counterparty_id}
+                        onChange={e => handleFieldChange('counterparty_id', e.target.value)}>
+                        <option value="">— Kontragent tanlang —</option>
+                        {cps.map(c => <option key={c.id} value={c.id}>{c.name}{c.inn ? ` (${c.inn})` : ''}</option>)}
+                      </select>
+                      {cps.length===0 && <p className="text-xs text-yellow-500 mt-1">⚠ Avval kontragent qo&apos;shing</p>}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Shablon tanlash */}
+                <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+                  <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider mb-3">Shartnoma tuzilmasi</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => setUseTemplate(true)}
+                      className={`flex items-start gap-3 p-3 rounded-xl border text-left transition ${
+                        useTemplate
+                          ? 'border-emerald-500 bg-emerald-900/20 text-white'
+                          : 'border-gray-700 text-gray-400 hover:border-gray-600'
+                      }`}>
+                      <span className={`mt-0.5 text-base flex-shrink-0 ${useTemplate ? 'text-emerald-400' : 'text-gray-600'}`}>
+                        {useTemplate ? '●' : '○'}
+                      </span>
+                      <div>
+                        <div className="text-sm font-medium">Shablon orqali</div>
+                        <div className="text-xs text-gray-500 mt-0.5">Tanlangan shartnoma turiga mos bo&apos;limlar avtomatik to&apos;ldiriladi</div>
+                      </div>
+                    </button>
+                    <button type="button" onClick={() => setUseTemplate(false)}
+                      className={`flex items-start gap-3 p-3 rounded-xl border text-left transition ${
+                        !useTemplate
+                          ? 'border-blue-500 bg-blue-900/20 text-white'
+                          : 'border-gray-700 text-gray-400 hover:border-gray-600'
+                      }`}>
+                      <span className={`mt-0.5 text-base flex-shrink-0 ${!useTemplate ? 'text-blue-400' : 'text-gray-600'}`}>
+                        {!useTemplate ? '●' : '○'}
+                      </span>
+                      <div>
+                        <div className="text-sm font-medium">O&apos;zim yozaman</div>
+                        <div className="text-xs text-gray-500 mt-0.5">Bo&apos;sh tuzilma ochiladi, barcha matnlarni o&apos;zingiz kiritasiz</div>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                <button type="button" onClick={goToStep2}
+                  className="w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2">
+                  {useTemplate ? 'Shablonni yuklash va tahrirlash →' : 'Bo\'sh tuzilmani ochish →'}
+                </button>
+              </div>
+            )}
+
+            {/* ── 2-QADAM: Bo'limlar va bandlar ── */}
+            {step === 2 && (
+              <div className="space-y-4">
+
+                {/* Status bar */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {useTemplate ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs bg-emerald-900/30 border border-emerald-700/50 text-emerald-400 px-2.5 py-1 rounded-full">
+                        <span>✓</span> Shablon qo&apos;llanildi
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-xs bg-blue-900/30 border border-blue-700/50 text-blue-400 px-2.5 py-1 rounded-full">
+                        <span>✎</span> Qo&apos;lda to&apos;ldirilmoqda
+                      </span>
+                    )}
+                    <span className="text-xs text-gray-600">{structure.bolimlar.length} bo&apos;lim</span>
+                  </div>
+                  {useTemplate && (
+                    <button type="button" onClick={reloadStructure}
+                      className="text-xs text-gray-400 hover:text-blue-300 border border-gray-700 hover:border-blue-700 px-3 py-1.5 rounded-lg transition">
+                      ↺ Qayta yuklash
+                    </button>
+                  )}
+                </div>
+
+                {/* Bo'limlar */}
+                {structure.bolimlar.map((bolim, bi) => (
+                  <div key={bi} className="bg-gray-800/40 border border-gray-700 rounded-xl overflow-hidden">
+
+                    {/* Sarlavha */}
+                    <div className="flex items-center gap-3 px-4 py-2.5 bg-gray-800/80 border-b border-gray-700">
+                      <span className="text-blue-400 font-bold text-sm w-7 flex-shrink-0 select-none">{bi+1}.</span>
+                      <input
+                        value={bolim.sarlavha}
+                        onChange={e => updateSarlavha(bi, e.target.value)}
+                        className="flex-1 bg-transparent text-white text-sm font-semibold focus:outline-none placeholder-gray-600 min-w-0"
+                        placeholder="Bo'lim sarlavhasi (masalan: SHARTNOMA PREDMETI)"
+                      />
+                      <button type="button" onClick={() => removeBolim(bi)}
+                        className="w-7 h-7 flex items-center justify-center rounded text-gray-600 hover:text-red-400 hover:bg-red-900/30 transition text-lg flex-shrink-0"
+                        title="Bo'limni o'chirish">×</button>
+                    </div>
+
+                    {/* Bandlar */}
+                    <div className="p-3 space-y-2">
+                      {bolim.bandlar.map((band, bdi) => (
+                        <div key={bdi} className="flex gap-2 items-start">
+                          <span className="text-gray-600 text-xs font-mono w-9 pt-2.5 flex-shrink-0 text-right select-none">
+                            {bi+1}.{bdi+1}.
+                          </span>
+                          <textarea
+                            value={band.matn}
+                            onChange={e => updateBand(bi, bdi, e.target.value)}
+                            rows={2}
+                            className="flex-1 bg-gray-800 border border-gray-700/80 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500 resize-none leading-relaxed min-w-0"
+                            placeholder="Band matni..."
+                          />
+                          <button type="button" onClick={() => removeBand(bi, bdi)}
+                            className="w-7 h-7 flex items-center justify-center rounded text-gray-700 hover:text-red-400 hover:bg-red-900/20 transition text-base flex-shrink-0 mt-1"
+                            title="Bandni o'chirish">×</button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => addBand(bi)}
+                        className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 px-2 py-1.5 rounded-lg hover:bg-blue-900/20 transition ml-11 font-medium">
+                        + Band qo&apos;shish
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Bo'lim qo'shish */}
+                <button type="button" onClick={addBolim}
+                  className="w-full border-2 border-dashed border-gray-700 hover:border-blue-600 text-gray-500 hover:text-blue-400 py-3 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2">
+                  + Bo&apos;lim qo&apos;shish
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 border-t border-gray-800 flex gap-3 flex-shrink-0">
+            {step === 2 && (
+              <button type="button" onClick={() => setStep(1)}
+                className="px-4 py-2.5 border border-gray-700 text-gray-300 rounded-lg text-sm hover:bg-gray-800 transition">
+                ← Orqaga
+              </button>
+            )}
+            <button type="button" onClick={onClose}
+              className="px-4 py-2.5 border border-gray-700 text-gray-300 rounded-lg text-sm hover:bg-gray-800 transition">
+              Bekor qilish
+            </button>
+            <button type="submit" disabled={saving}
+              className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-semibold transition">
+              {saving ? 'Saqlanmoqda...' : '💾 Shartnomani saqlash'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   )
 }
