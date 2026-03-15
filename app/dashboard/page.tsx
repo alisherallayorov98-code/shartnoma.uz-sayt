@@ -1483,7 +1483,7 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl">
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl">
 
         {/* Header */}
         <div className="flex justify-between items-center px-6 py-4 border-b border-gray-800 flex-shrink-0">
@@ -1785,7 +1785,7 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                             <tr key={i} className="border-t border-gray-700/50 hover:bg-gray-800/20">
                               <td className="px-3 py-1.5 text-gray-500 text-center">{i+1}</td>
                               <td className="px-2 py-1.5">
-                                <input list="birliklar-list"
+                                <input
                                   className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
                                   value={item.nomi} placeholder="Mahsulot yoki xizmat nomi"
                                   onChange={e => updateSpecItem(i, 'nomi', e.target.value)}/>
@@ -1832,30 +1832,19 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                           ))}
                         </tbody>
                         <tfoot>
-                          <tr className="border-t border-gray-600 bg-gray-800/50 text-xs">
-                            <td colSpan={6} className="px-3 py-2 text-right text-gray-400">
-                              {hasAnyQqs ? 'Soliqsiz jami:' : 'Jami:'}
+                          {/* Jami qatori — Didox uslubida: label | narx jami | QQS jami | Grand total */}
+                          <tr className="border-t-2 border-gray-600 bg-gray-800/60 text-xs font-semibold">
+                            <td colSpan={4} className="px-3 py-2.5 text-right text-gray-400">Jami:</td>
+                            <td className="px-2 py-2.5 text-right text-white">{specAsosiy.toLocaleString()}</td>
+                            <td className="px-2 py-2.5 text-center text-gray-500">—</td>
+                            <td className="px-2 py-2.5 text-right text-orange-400">
+                              {specQqsJami > 0 ? specQqsJami.toLocaleString() : '—'}
                             </td>
-                            <td className="px-2 py-2 text-right text-gray-400">{hasAnyQqs ? specQqsJami.toLocaleString() : ''}</td>
-                            <td className="px-2 py-2 text-right text-white font-bold">{hasAnyQqs ? specAsosiy.toLocaleString() : specGrand.toLocaleString()}</td>
+                            <td className="px-2 py-2.5 text-right text-white font-bold text-sm">
+                              {specGrand.toLocaleString()}
+                            </td>
                             <td></td>
                           </tr>
-                          {hasAnyQqs && (
-                            <tr className="bg-orange-900/10 text-xs border-t border-orange-800/30">
-                              <td colSpan={6} className="px-3 py-2 text-right text-gray-400">QQS jami:</td>
-                              <td className="px-2 py-2 text-right text-orange-400 font-semibold">{specQqsJami.toLocaleString()}</td>
-                              <td></td>
-                              <td></td>
-                            </tr>
-                          )}
-                          {hasAnyQqs && (
-                            <tr className="bg-orange-900/10 text-xs border-t border-orange-700/30">
-                              <td colSpan={6} className="px-3 py-2.5 text-right text-white font-bold">QQS bilan jami:</td>
-                              <td className="px-2 py-2.5 text-right text-orange-300 font-bold">{specQqsJami.toLocaleString()}</td>
-                              <td className="px-2 py-2.5 text-right text-orange-300 font-bold text-sm">{specGrand.toLocaleString()}</td>
-                              <td></td>
-                            </tr>
-                          )}
                         </tfoot>
                       </table>
                     </div>
