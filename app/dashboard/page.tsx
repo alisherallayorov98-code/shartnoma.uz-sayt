@@ -93,7 +93,8 @@ export default function DashboardPage() {
   const emptyContract = {
     contract_number:'', contract_date: new Date().toISOString().split('T')[0],
     contract_type:'oldi_sotdi', amount:'', organization_id:'', counterparty_id:'',
-    status:'draft', content:'', city:'Toshkent', product_name:'', spec_items: [] as SpecItem[]
+    status:'draft', content:'', city:'Toshkent', product_name:'', spec_items: [] as SpecItem[],
+    qqs_enabled: false, qqs_rate: 12
   }
   const emptyBank = { bank_name:'', account_number:'', mfo:'', is_default: false }
 
@@ -240,6 +241,8 @@ export default function DashboardPage() {
       city: contractForm.city,
       product_name: contractForm.product_name || null,
       spec_items: contractForm.spec_items?.length ? contractForm.spec_items : null,
+      qqs_enabled: contractForm.qqs_enabled || false,
+      qqs_rate: contractForm.qqs_rate || 12,
       user_id: session!.user.id
     })
     if (subscription) {
@@ -392,13 +395,29 @@ export default function DashboardPage() {
         })
         y += 5
       })
-      // Jami
+      // Jami qatorlar
       const total = items.reduce((s, item) => s + item.summa, 0)
+      const hasQqs = (c as any).qqs_enabled
+      const qRate = (c as any).qqs_rate || 12
+      const qSum = hasQqs ? Math.round(total * qRate / 100) : 0
+      const grand = total + qSum
       doc.setFont('helvetica', 'bold')
+      doc.setFontSize(8)
       doc.setFillColor(245, 245, 245)
-      doc.rect(margin, y - 3, contentW, 6, 'F')
-      doc.text(`Jami: ${total.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
-      y += 8
+      if (hasQqs) {
+        doc.rect(margin, y - 3, contentW, 18, 'F')
+        doc.setTextColor(80, 80, 80)
+        doc.text(`Soliqsiz jami: ${total.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
+        doc.text(`QQS (${qRate}%): ${qSum.toLocaleString()} so'm`, margin + contentW - 2, y + 6, { align: 'right' })
+        doc.setTextColor(20, 20, 20)
+        doc.text(`QQS bilan jami: ${grand.toLocaleString()} so'm`, margin + contentW - 2, y + 12, { align: 'right' })
+        y += 18
+      } else {
+        doc.rect(margin, y - 3, contentW, 6, 'F')
+        doc.setTextColor(20, 20, 20)
+        doc.text(`Jami: ${total.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
+        y += 8
+      }
       return y
     }
 
@@ -1285,6 +1304,20 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
   const [useTemplate, setUseTemplate] = useState(true)
   const [structure, setStructure] = useState<ContractStructure>({ bolimlar: [] })
   const [specItems, setSpecItems] = useState<SpecItem[]>(form.spec_items || [])
+  const [qqs, setQqsState] = useState(false)
+  const [qqsRate] = useState(12)
+  function setQqs(val: boolean) { setQqsState(val); setForm({ ...form, qqs_enabled: val }) }
+
+  const BIRLIKLAR = [
+    'dona','juft','komplekt',"to'plam","o'ram",'rull','quti','xalta','paket',"bo'lak",'varaq',
+    'kg','g','tonna','sentner',
+    'litr','ml','dekalitr',
+    'metr','sm','mm','km',
+    'm²','m³','sm²','sm³',
+    'gektar','sotix',
+    'soat','kun','hafta','oy','yil',
+    'ta','marta','xizmat','loyiha','bosqich','tur',
+  ]
 
   const emptySpecItem = (): SpecItem => ({ nomi: '', birlik: 'dona', miqdori: 1, narxi: 0, summa: 0 })
 
@@ -1311,6 +1344,8 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
     setForm({ ...form, spec_items: updated })
   }
   const specTotal = specItems.reduce((s, item) => s + item.summa, 0)
+  const qqsSum = qqs ? Math.round(specTotal * qqsRate / 100) : 0
+  const specGrand = specTotal + qqsSum
 
   function buildOrgCp(f: any) {
     const org = orgs.find(o => o.id === f.organization_id) || null
@@ -1682,70 +1717,111 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
             {/* ── 3-QADAM: Spesifikatsiya ── */}
             {step === 3 && (
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
+
+                {/* datalist — birlik autocomplete */}
+                <datalist id="birliklar-list">
+                  {BIRLIKLAR.map(b => <option key={b} value={b}/>)}
+                </datalist>
+
+                {/* Sarlavha + QQS toggle */}
+                <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-sm text-white font-medium">Mahsulot/xizmatlar ro&apos;yxati</p>
                     <p className="text-xs text-gray-500 mt-0.5">Ixtiyoriy. PDFga 1-ilova sifatida qo&apos;shiladi.</p>
                   </div>
-                  {specItems.length > 0 && (
-                    <span className="text-xs bg-blue-900/30 text-blue-400 border border-blue-800/50 px-2.5 py-1 rounded-full">
-                      Jami: {specTotal.toLocaleString()} so&apos;m
-                    </span>
-                  )}
+                  {/* QQS toggle */}
+                  <div className="flex items-center gap-1 bg-gray-800 rounded-lg p-0.5 flex-shrink-0">
+                    <button type="button" onClick={() => setQqs(false)}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${!qqs ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                      QQSsiz
+                    </button>
+                    <button type="button" onClick={() => setQqs(true)}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${qqs ? 'bg-orange-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                      QQS 12%
+                    </button>
+                  </div>
                 </div>
 
+                {/* Jadval */}
                 {specItems.length > 0 && (
                   <div className="overflow-x-auto rounded-xl border border-gray-700">
                     <table className="w-full text-xs">
                       <thead>
-                        <tr className="bg-gray-800 text-gray-400">
-                          <th className="px-3 py-2 text-left w-8">№</th>
-                          <th className="px-3 py-2 text-left">Nomi</th>
-                          <th className="px-2 py-2 text-left w-16">Birlik</th>
-                          <th className="px-2 py-2 text-right w-16">Miqdori</th>
-                          <th className="px-2 py-2 text-right w-20">Narxi</th>
-                          <th className="px-2 py-2 text-right w-24">Summa</th>
-                          <th className="px-2 py-2 w-8"></th>
+                        <tr className="bg-gray-800 text-gray-400 text-left">
+                          <th className="px-3 py-2 w-7">№</th>
+                          <th className="px-2 py-2">Nomi</th>
+                          <th className="px-2 py-2 w-20">O&apos;lchov</th>
+                          <th className="px-2 py-2 w-16 text-right">Miqdori</th>
+                          <th className="px-2 py-2 w-24 text-right">Narxi (so&apos;m)</th>
+                          <th className="px-2 py-2 w-24 text-right">Summa</th>
+                          <th className="px-2 py-2 w-7"></th>
                         </tr>
                       </thead>
                       <tbody>
                         {specItems.map((item, i) => (
-                          <tr key={i} className="border-t border-gray-700/60 hover:bg-gray-800/30">
-                            <td className="px-3 py-2 text-gray-500">{i+1}</td>
+                          <tr key={i} className="border-t border-gray-700/60 hover:bg-gray-800/20">
+                            <td className="px-3 py-1.5 text-gray-500">{i+1}</td>
                             <td className="px-2 py-1.5">
-                              <input className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
-                                value={item.nomi} placeholder="Mahsulot nomi"
+                              <input
+                                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
+                                value={item.nomi} placeholder="Mahsulot yoki xizmat nomi"
                                 onChange={e => updateSpecItem(i, 'nomi', e.target.value)}/>
                             </td>
                             <td className="px-2 py-1.5">
-                              <input className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
+                              <input
+                                list="birliklar-list"
+                                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
                                 value={item.birlik} placeholder="dona"
                                 onChange={e => updateSpecItem(i, 'birlik', e.target.value)}/>
                             </td>
                             <td className="px-2 py-1.5">
-                              <input type="number" className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
-                                value={item.miqdori} min={1}
-                                onChange={e => updateSpecItem(i, 'miqdori', parseFloat(e.target.value)||1)}/>
+                              <input type="number"
+                                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
+                                value={item.miqdori} min={0} step="any"
+                                onChange={e => updateSpecItem(i, 'miqdori', parseFloat(e.target.value)||0)}/>
                             </td>
                             <td className="px-2 py-1.5">
-                              <input type="number" className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
+                              <input type="number"
+                                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
                                 value={item.narxi} min={0}
                                 onChange={e => updateSpecItem(i, 'narxi', parseFloat(e.target.value)||0)}/>
                             </td>
-                            <td className="px-2 py-2 text-right text-gray-300 font-medium">
+                            <td className="px-2 py-1.5 text-right text-gray-200 font-medium">
                               {item.summa.toLocaleString()}
                             </td>
-                            <td className="px-2 py-2">
+                            <td className="px-2 py-1.5">
                               <button type="button" onClick={() => removeSpecItem(i)}
-                                className="w-6 h-6 flex items-center justify-center rounded text-gray-600 hover:text-red-400 hover:bg-red-900/20 transition text-base">×</button>
+                                className="w-6 h-6 flex items-center justify-center rounded text-gray-600 hover:text-red-400 hover:bg-red-900/20 transition">×</button>
                             </td>
                           </tr>
                         ))}
-                        <tr className="border-t border-gray-600 bg-gray-800/50">
-                          <td colSpan={5} className="px-3 py-2 text-right text-gray-400 font-semibold">Jami summa:</td>
-                          <td className="px-2 py-2 text-right text-white font-bold">{specTotal.toLocaleString()}</td>
+
+                        {/* Footer */}
+                        <tr className="border-t border-gray-700 bg-gray-800/30">
+                          <td colSpan={5} className="px-3 py-2 text-right text-gray-400 text-xs">
+                            {qqs ? 'Soliqsiz summa:' : 'Jami summa:'}
+                          </td>
+                          <td className="px-2 py-2 text-right text-white font-semibold text-xs">{specTotal.toLocaleString()}</td>
                           <td></td>
                         </tr>
+                        {qqs && (
+                          <>
+                            <tr className="bg-orange-900/10">
+                              <td colSpan={5} className="px-3 py-2 text-right text-orange-400 text-xs">
+                                QQS ({qqsRate}%):
+                              </td>
+                              <td className="px-2 py-2 text-right text-orange-300 font-semibold text-xs">{qqsSum.toLocaleString()}</td>
+                              <td></td>
+                            </tr>
+                            <tr className="border-t border-orange-700/40 bg-orange-900/10">
+                              <td colSpan={5} className="px-3 py-2 text-right text-white font-bold text-xs">
+                                QQS bilan jami:
+                              </td>
+                              <td className="px-2 py-2 text-right text-orange-300 font-bold text-sm">{specGrand.toLocaleString()}</td>
+                              <td></td>
+                            </tr>
+                          </>
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -1757,8 +1833,8 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                 </button>
 
                 {specItems.length === 0 && (
-                  <p className="text-center text-gray-600 text-xs py-4">
-                    Spesifikatsiya ixtiyoriy. Qo&apos;shmasangiz, PDF da jadval bo&apos;lmaydi.
+                  <p className="text-center text-gray-600 text-xs py-2">
+                    Spesifikatsiya ixtiyoriy — qo&apos;shmasangiz PDFda jadval bo&apos;lmaydi.
                   </p>
                 )}
               </div>
