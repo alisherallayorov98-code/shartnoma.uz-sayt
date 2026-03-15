@@ -4,8 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
-// Admin emaillar — faqat shu emaillar admin panelga kira oladi
-const ADMIN_EMAILS = ['admin@shartnoma.uz', 'alisherallayorov98@gmail.com']
+const ADMIN_EMAILS = (process.env.NEXT_PUBLIC_ADMIN_EMAILS || 'admin@shartnoma.uz').split(',')
 
 type OrgRow = {
   id: string; name: string; inn: string; user_id: string

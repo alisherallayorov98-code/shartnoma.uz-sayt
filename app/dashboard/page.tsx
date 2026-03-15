@@ -26,6 +26,10 @@ type Contract = {
   organization_id: string; counterparty_id: string
   organizations?: Org; counterparties?: Counterparty; created_at: string
   content?: string; city?: string; product_name?: string
+  spec_items?: SpecItem[]
+}
+type SpecItem = {
+  nomi: string; birlik: string; miqdori: number; narxi: number; summa: number
 }
 type Subscription = {
   id: string; organization_id: string; plan: string
@@ -87,7 +91,7 @@ export default function DashboardPage() {
   const emptyContract = {
     contract_number:'', contract_date: new Date().toISOString().split('T')[0],
     contract_type:'oldi_sotdi', amount:'', organization_id:'', counterparty_id:'',
-    status:'draft', content:'', city:'Toshkent', product_name:''
+    status:'draft', content:'', city:'Toshkent', product_name:'', spec_items: [] as SpecItem[]
   }
   const emptyBank = { bank_name:'', account_number:'', mfo:'', is_default: false }
 
@@ -233,6 +237,7 @@ export default function DashboardPage() {
       content: contractForm.content,
       city: contractForm.city,
       product_name: contractForm.product_name || null,
+      spec_items: contractForm.spec_items?.length ? contractForm.spec_items : null,
       user_id: session!.user.id
     })
     if (subscription) {
@@ -309,6 +314,19 @@ export default function DashboardPage() {
     loadOrgs()
   }
 
+  async function loadImageAsBase64(url: string): Promise<string | null> {
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      return await new Promise((resolve) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = () => resolve(null)
+        reader.readAsDataURL(blob)
+      })
+    } catch { return null }
+  }
+
   async function generatePDF(c: Contract) {
     const { jsPDF } = await import('jspdf')
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
@@ -316,92 +334,202 @@ export default function DashboardPage() {
     const pageW = 210
     const pageH = 297
     const contentW = pageW - margin * 2
-
-    // Shartnoma matni bor bo'lsa — to'liq matn PDF
     const content = c.content || ''
+
+    // Org rasm URL larini olish (contracts join qilmagan, shuning uchun orgs listidan izlaymiz)
+    const orgData = orgs.find(o => o.id === c.organization_id)
+    const [stampB64, signB64] = await Promise.all([
+      orgData?.stamp_url ? loadImageAsBase64(orgData.stamp_url) : Promise.resolve(null),
+      orgData?.signature_url ? loadImageAsBase64(orgData.signature_url) : Promise.resolve(null),
+    ])
+
+    // ─── Spesifikatsiya jadvali yordamchi funksiya ───
+    function drawSpecTable(startY: number): number {
+      const items = c.spec_items || []
+      if (!items.length) return startY
+      let y = startY + 6
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(10)
+      doc.setTextColor(20, 20, 20)
+      doc.text('SPESIFIKATSIYA (1-ILOVA)', margin, y)
+      y += 6
+      // Jadval sarlavhasi
+      const cols = [7, 75, 20, 20, 25, 28] // x positions
+      const headers = ['№', 'Mahsulot/xizmat nomi', 'Birlik', 'Miqdori', 'Narxi', 'Summa']
+      doc.setFillColor(240, 242, 245)
+      doc.rect(margin, y - 4, contentW, 7, 'F')
+      doc.setDrawColor(200, 200, 200)
+      doc.rect(margin, y - 4, contentW, 7, 'S')
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(8)
+      doc.setTextColor(60, 60, 60)
+      let cx = margin + 2
+      headers.forEach((h, i) => { doc.text(h, cx, y); cx += cols[i] })
+      y += 5
+      // Qatorlar
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8)
+      doc.setTextColor(20, 20, 20)
+      items.forEach((item, idx) => {
+        if (y > pageH - 30) { doc.addPage(); y = margin + 10 }
+        doc.setDrawColor(220, 220, 220)
+        doc.line(margin, y + 2, margin + contentW, y + 2)
+        cx = margin + 2
+        const row = [
+          String(idx + 1),
+          item.nomi,
+          item.birlik,
+          String(item.miqdori),
+          item.narxi.toLocaleString(),
+          item.summa.toLocaleString()
+        ]
+        row.forEach((cell, i) => {
+          const maxW = cols[i] - 2
+          const truncated = doc.splitTextToSize(cell, maxW)[0] as string
+          doc.text(truncated, cx, y); cx += cols[i]
+        })
+        y += 5
+      })
+      // Jami
+      const total = items.reduce((s, item) => s + item.summa, 0)
+      doc.setFont('helvetica', 'bold')
+      doc.setFillColor(245, 245, 245)
+      doc.rect(margin, y - 3, contentW, 6, 'F')
+      doc.text(`Jami: ${total.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
+      y += 8
+      return y
+    }
+
+    // ─── Imzo va muhr bloki ───
+    async function drawSignatures(y: number) {
+      // Yetarli joy bormi?
+      if (y > pageH - 55) { doc.addPage(); y = margin }
+      y += 8
+      doc.setDrawColor(200, 200, 200)
+      doc.line(margin, y, margin + contentW, y)
+      y += 8
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(9)
+      doc.setTextColor(30, 30, 30)
+      doc.text('BUYURTMACHI:', margin, y)
+      doc.text('IJROCHI:', margin + 95, y)
+      y += 5
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8)
+      doc.setTextColor(80, 80, 80)
+      if (c.organizations) {
+        const o = c.organizations
+        doc.text(o.name || '', margin, y)
+        doc.text(`INN: ${o.inn || '—'}`, margin, y + 5)
+        doc.text(`Rahbar: ${o.director_name || '—'}`, margin, y + 10)
+      }
+      if (c.counterparties) {
+        const cp = c.counterparties
+        doc.text(cp.name || '', margin + 95, y)
+        doc.text(`INN: ${cp.inn || '—'}`, margin + 95, y + 5)
+        doc.text(`Rahbar: ${cp.director_name || '—'}`, margin + 95, y + 10)
+      }
+      y += 18
+      // Imzo chiziqlari
+      doc.setDrawColor(150, 150, 150)
+      doc.line(margin, y, margin + 60, y)
+      doc.line(margin + 95, y, margin + 155, y)
+      doc.setFontSize(7)
+      doc.setTextColor(150, 150, 150)
+      doc.text('Imzo', margin + 30, y + 4, { align: 'center' })
+      doc.text('Imzo', margin + 125, y + 4, { align: 'center' })
+      y += 12
+      // Muhr va imzo rasmlari
+      try {
+        if (signB64) {
+          doc.addImage(signB64, 'PNG', margin, y - 22, 30, 15)
+        }
+        if (stampB64) {
+          doc.addImage(stampB64, 'PNG', margin + 5, y - 18, 25, 25)
+        }
+      } catch { /* rasm yuklanmadi */ }
+      // Footer
+      doc.setFontSize(7)
+      doc.setTextColor(180, 180, 180)
+      const totalPages = doc.getNumberOfPages()
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p)
+        doc.text('Shartnoma.uz — Online shartnoma generatori', pageW / 2, pageH - 6, { align: 'center' })
+        doc.text(`${p} / ${totalPages}`, pageW - margin, pageH - 6, { align: 'right' })
+      }
+    }
 
     if (content) {
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(10)
       doc.setTextColor(20, 20, 20)
-
       const lines = doc.splitTextToSize(content, contentW)
       let y = margin
       const lineHeight = 5.5
-
       for (let i = 0; i < lines.length; i++) {
-        if (y + lineHeight > pageH - margin) {
-          doc.addPage()
-          y = margin
-        }
+        if (y + lineHeight > pageH - margin) { doc.addPage(); y = margin }
         const line = lines[i] as string
-        // Sarlavhalarni qalin qilish
         if (
-          line.match(/^[A-Z\s]{5,}$/) ||
           line.match(/^\d+\.\s[A-Z]/) ||
-          line.includes('SHARTNOMA') ||
-          line.includes('REKVIZIT')
+          line.match(/^[A-ZА-ЯЎҚҒҲ\s]{6,}$/) ||
+          line.includes('SHARTNOMA') || line.includes('REKVIZIT')
         ) {
-          doc.setFont('helvetica', 'bold')
-          doc.setFontSize(10)
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(10)
         } else {
-          doc.setFont('helvetica', 'normal')
-          doc.setFontSize(9.5)
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5)
         }
         doc.text(line, margin, y)
         y += lineHeight
       }
-
-      // Pastki qism
-      const lastPage = doc.getNumberOfPages()
-      doc.setPage(lastPage)
-      doc.setFontSize(7)
-      doc.setTextColor(180, 180, 180)
-      doc.text('Shartnoma.uz — Online shartnoma generatori', pageW / 2, pageH - 8, { align: 'center' })
-
+      // Spesifikatsiya
+      if ((c.spec_items || []).length > 0) {
+        if (y > pageH - 60) { doc.addPage(); y = margin }
+        y = drawSpecTable(y + 5)
+      }
+      await drawSignatures(y)
     } else {
-      // Eski format — matn yo'q bo'lsa
+      // Matn yo'q — asosiy info
       const t = (text: string, x: number, y: number, size = 11) => {
-        doc.setFontSize(size); doc.text(String(text||''), x, y)
+        doc.setFontSize(size); doc.text(String(text || ''), x, y)
       }
       doc.setFillColor(30, 41, 59); doc.rect(0, 0, 210, 40, 'F')
-      doc.setTextColor(255, 255, 255)
-      doc.setFont('helvetica','bold')
+      doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold')
       t('SHARTNOMA', 105, 16, 20)
-      doc.setFont('helvetica','normal')
-      t(`№ ${c.contract_number}  |  ${c.contract_date}`, 105, 27, 10)
-      doc.setTextColor(0,0,0)
-      doc.setDrawColor(200,200,200)
+      doc.setFont('helvetica', 'normal')
+      t(`№ ${c.contract_number}  |  ${c.contract_date}  |  ${c.city || 'Toshkent'}`, 105, 27, 10)
+      doc.setTextColor(0, 0, 0); doc.setDrawColor(200, 200, 200)
       doc.rect(10, 48, 90, 65); doc.rect(110, 48, 90, 65)
-      doc.setFontSize(8); doc.setTextColor(100,100,100)
-      doc.text('BUYURTMACHI', 55, 54, {align:'center'})
-      doc.text('IJROCHI', 155, 54, {align:'center'})
-      doc.setTextColor(0,0,0)
+      doc.setFontSize(8); doc.setTextColor(100, 100, 100)
+      doc.text('BUYURTMACHI', 55, 54, { align: 'center' })
+      doc.text('IJROCHI', 155, 54, { align: 'center' })
+      doc.setTextColor(0, 0, 0)
       if (c.organizations) {
         const o = c.organizations
-        t(o.name, 13, 62, 9); t(`INN: ${o.inn||'—'}`, 13, 70, 8)
-        t(`Rahbar: ${o.director_name||'—'}`, 13, 78, 8)
-        t(`Bank: ${o.bank_name||'—'}`, 13, 86, 8)
-        t(`H/r: ${o.bank_account||'—'}`, 13, 94, 8)
-        t(`MFO: ${o.mfo||'—'}`, 13, 102, 8)
+        t(o.name, 13, 62, 9); t(`INN: ${o.inn || '—'}`, 13, 70, 8)
+        t(`Rahbar: ${o.director_name || '—'}`, 13, 78, 8)
+        t(`Bank: ${o.bank_name || '—'}`, 13, 86, 8)
+        t(`H/r: ${o.bank_account || '—'}`, 13, 94, 8)
+        t(`MFO: ${o.mfo || '—'}`, 13, 102, 8)
       }
       if (c.counterparties) {
         const cp = c.counterparties
-        t(cp.name, 113, 62, 9); t(`INN: ${cp.inn||'—'}`, 113, 70, 8)
-        t(`Rahbar: ${cp.director_name||'—'}`, 113, 78, 8)
-        t(`Bank: ${cp.bank_name||'—'}`, 113, 86, 8)
-        t(`H/r: ${cp.bank_account||'—'}`, 113, 94, 8)
-        t(`MFO: ${cp.mfo||'—'}`, 113, 102, 8)
+        t(cp.name, 113, 62, 9); t(`INN: ${cp.inn || '—'}`, 113, 70, 8)
+        t(`Rahbar: ${cp.director_name || '—'}`, 113, 78, 8)
+        t(`Bank: ${cp.bank_name || '—'}`, 113, 86, 8)
+        t(`H/r: ${cp.bank_account || '—'}`, 113, 94, 8)
+        t(`MFO: ${cp.mfo || '—'}`, 113, 102, 8)
       }
       doc.line(10, 122, 200, 122)
-      t(`Tur: ${CONTRACT_TYPE_NAMES[c.contract_type as keyof typeof CONTRACT_TYPE_NAMES]||c.contract_type}`, 10, 132, 9)
-      if (c.product_name) t(`Mahsulot/xizmat: ${c.product_name}`, 10, 140, 9)
-      t(`Summa: ${c.amount?.toLocaleString()} so'm`, 10, c.product_name ? 148 : 142, 9)
-      doc.setFontSize(7); doc.setTextColor(180,180,180)
-      doc.text('Shartnoma.uz', 105, 287, {align:'center'})
+      t(`Tur: ${CONTRACT_TYPE_NAMES[c.contract_type as keyof typeof CONTRACT_TYPE_NAMES] || c.contract_type}`, 10, 132, 9)
+      let infoY = 140
+      if (c.product_name) { t(`Mahsulot/xizmat: ${c.product_name}`, 10, infoY, 9); infoY += 8 }
+      t(`Summa: ${c.amount?.toLocaleString()} so'm`, 10, infoY, 9)
+      let nextY = infoY + 12
+      if ((c.spec_items || []).length > 0) nextY = drawSpecTable(nextY)
+      await drawSignatures(nextY)
     }
 
-    doc.save(`shartnoma-${c.contract_number.replace(/\//g,'-')}.pdf`)
+    doc.save(`shartnoma-${c.contract_number.replace(/\//g, '-')}.pdf`)
   }
 
   // ── Filters ──
@@ -1151,9 +1279,36 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
   onClose: () => void; saving: boolean
   inp: string; lbl: string
 }) {
-  const [step, setStep] = useState<1|2>(1)
+  const [step, setStep] = useState<1|2|3>(1)
   const [useTemplate, setUseTemplate] = useState(true)
   const [structure, setStructure] = useState<ContractStructure>({ bolimlar: [] })
+  const [specItems, setSpecItems] = useState<SpecItem[]>(form.spec_items || [])
+
+  const emptySpecItem = (): SpecItem => ({ nomi: '', birlik: 'dona', miqdori: 1, narxi: 0, summa: 0 })
+
+  function addSpecItem() {
+    const updated = [...specItems, emptySpecItem()]
+    setSpecItems(updated)
+    setForm({ ...form, spec_items: updated })
+  }
+  function removeSpecItem(i: number) {
+    const updated = specItems.filter((_, idx) => idx !== i)
+    setSpecItems(updated)
+    setForm({ ...form, spec_items: updated })
+  }
+  function updateSpecItem(i: number, field: keyof SpecItem, value: string | number) {
+    const updated = specItems.map((item, idx) => {
+      if (idx !== i) return item
+      const next = { ...item, [field]: value }
+      if (field === 'miqdori' || field === 'narxi') {
+        next.summa = Number(next.miqdori) * Number(next.narxi)
+      }
+      return next
+    })
+    setSpecItems(updated)
+    setForm({ ...form, spec_items: updated })
+  }
+  const specTotal = specItems.reduce((s, item) => s + item.summa, 0)
 
   function buildOrgCp(f: any) {
     const org = orgs.find(o => o.id === f.organization_id) || null
@@ -1286,6 +1441,10 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
               <button type="button" onClick={goToStep2}
                 className={`px-3 py-1 rounded-md text-xs font-medium transition ${step===2 ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
                 2. Bo&apos;limlar
+              </button>
+              <button type="button" onClick={() => setStep(3)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition ${step===3 ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
+                3. Spesifikatsiya
               </button>
             </div>
           </div>
@@ -1509,14 +1668,105 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                   className="w-full border-2 border-dashed border-gray-700 hover:border-blue-600 text-gray-500 hover:text-blue-400 py-3 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2">
                   + Bo&apos;lim qo&apos;shish
                 </button>
+                <div className="flex justify-end pt-2">
+                  <button type="button" onClick={() => setStep(3)}
+                    className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition">
+                    Spesifikatsiya →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── 3-QADAM: Spesifikatsiya ── */}
+            {step === 3 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-white font-medium">Mahsulot/xizmatlar ro&apos;yxati</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Ixtiyoriy. PDFga 1-ilova sifatida qo&apos;shiladi.</p>
+                  </div>
+                  {specItems.length > 0 && (
+                    <span className="text-xs bg-blue-900/30 text-blue-400 border border-blue-800/50 px-2.5 py-1 rounded-full">
+                      Jami: {specTotal.toLocaleString()} so&apos;m
+                    </span>
+                  )}
+                </div>
+
+                {specItems.length > 0 && (
+                  <div className="overflow-x-auto rounded-xl border border-gray-700">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-gray-800 text-gray-400">
+                          <th className="px-3 py-2 text-left w-8">№</th>
+                          <th className="px-3 py-2 text-left">Nomi</th>
+                          <th className="px-2 py-2 text-left w-16">Birlik</th>
+                          <th className="px-2 py-2 text-right w-16">Miqdori</th>
+                          <th className="px-2 py-2 text-right w-20">Narxi</th>
+                          <th className="px-2 py-2 text-right w-24">Summa</th>
+                          <th className="px-2 py-2 w-8"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {specItems.map((item, i) => (
+                          <tr key={i} className="border-t border-gray-700/60 hover:bg-gray-800/30">
+                            <td className="px-3 py-2 text-gray-500">{i+1}</td>
+                            <td className="px-2 py-1.5">
+                              <input className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
+                                value={item.nomi} placeholder="Mahsulot nomi"
+                                onChange={e => updateSpecItem(i, 'nomi', e.target.value)}/>
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
+                                value={item.birlik} placeholder="dona"
+                                onChange={e => updateSpecItem(i, 'birlik', e.target.value)}/>
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input type="number" className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
+                                value={item.miqdori} min={1}
+                                onChange={e => updateSpecItem(i, 'miqdori', parseFloat(e.target.value)||1)}/>
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input type="number" className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
+                                value={item.narxi} min={0}
+                                onChange={e => updateSpecItem(i, 'narxi', parseFloat(e.target.value)||0)}/>
+                            </td>
+                            <td className="px-2 py-2 text-right text-gray-300 font-medium">
+                              {item.summa.toLocaleString()}
+                            </td>
+                            <td className="px-2 py-2">
+                              <button type="button" onClick={() => removeSpecItem(i)}
+                                className="w-6 h-6 flex items-center justify-center rounded text-gray-600 hover:text-red-400 hover:bg-red-900/20 transition text-base">×</button>
+                            </td>
+                          </tr>
+                        ))}
+                        <tr className="border-t border-gray-600 bg-gray-800/50">
+                          <td colSpan={5} className="px-3 py-2 text-right text-gray-400 font-semibold">Jami summa:</td>
+                          <td className="px-2 py-2 text-right text-white font-bold">{specTotal.toLocaleString()}</td>
+                          <td></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                <button type="button" onClick={addSpecItem}
+                  className="w-full border-2 border-dashed border-gray-700 hover:border-emerald-600 text-gray-500 hover:text-emerald-400 py-3 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2">
+                  + Mahsulot/xizmat qo&apos;shish
+                </button>
+
+                {specItems.length === 0 && (
+                  <p className="text-center text-gray-600 text-xs py-4">
+                    Spesifikatsiya ixtiyoriy. Qo&apos;shmasangiz, PDF da jadval bo&apos;lmaydi.
+                  </p>
+                )}
               </div>
             )}
           </div>
 
           {/* Footer */}
           <div className="px-6 py-4 border-t border-gray-800 flex gap-3 flex-shrink-0">
-            {step === 2 && (
-              <button type="button" onClick={() => setStep(1)}
+            {(step === 2 || step === 3) && (
+              <button type="button" onClick={() => setStep(step === 3 ? 2 : 1)}
                 className="px-4 py-2.5 border border-gray-700 text-gray-300 rounded-lg text-sm hover:bg-gray-800 transition">
                 ← Orqaga
               </button>
