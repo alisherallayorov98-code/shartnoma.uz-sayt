@@ -13,6 +13,11 @@ type Org = {
   id: string; name: string; inn: string; director_name: string
   bank_name: string; bank_account: string; mfo: string; address: string
   stamp_url?: string; signature_url?: string
+  // Kengaytirilgan maydonlar
+  phone?: string; oked?: string; viloyat?: string; tuman?: string
+  qqsreg?: string; qqs_stavka?: string
+  director_pinfl?: string; chief_accountant?: string
+  sender_pinfl?: string; sender_name?: string
 }
 type BankAccount = {
   id: string; organization_id: string; bank_name: string
@@ -113,6 +118,10 @@ export default function DashboardPage() {
   })
   const [profileSaving, setProfileSaving] = useState(false)
   const [profileMsg, setProfileMsg] = useState('')
+  const [profileTab, setProfileTab] = useState<'account'|'company'>('account')
+  const [orgExtForm, setOrgExtForm] = useState<Partial<Org>>({})
+  const [orgExtSaving, setOrgExtSaving] = useState(false)
+  const [orgExtMsg, setOrgExtMsg] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [pwdMsg, setPwdMsg] = useState('')
 
@@ -138,7 +147,9 @@ export default function DashboardPage() {
     const list = data || []
     setOrgs(list)
     if (list.length > 0) {
-      setActiveOrg(prev => prev ? (list.find(o => o.id === prev.id) || list[0]) : list[0])
+      const current = list.find(o => o.id === (activeOrg?.id)) || list[0]
+      setActiveOrg(current)
+      setOrgExtForm(current)
     }
   }
 
@@ -184,7 +195,18 @@ export default function DashboardPage() {
 
   async function switchOrg(org: Org) {
     setActiveOrg(org)
+    setOrgExtForm(org)
     setOrgDropdown(false)
+  }
+
+  async function saveOrgExt(e: React.FormEvent) {
+    e.preventDefault()
+    if (!activeOrg) return
+    setOrgExtSaving(true); setOrgExtMsg('')
+    await supabase.from('organizations').update(orgExtForm).eq('id', activeOrg.id)
+    setOrgExtMsg('Saqlandi ✓'); setOrgExtSaving(false)
+    setTimeout(() => setOrgExtMsg(''), 3000)
+    loadOrgs()
   }
 
   async function logout() {
@@ -1079,6 +1101,23 @@ export default function DashboardPage() {
           {tab==='profile' && (
             <div className="max-w-3xl space-y-5">
 
+              {/* Sub-navigatsiya */}
+              <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1 w-fit">
+                {[
+                  { key: 'account', label: '👤 Akkaunt' },
+                  { key: 'company', label: '🏢 Korxona ma\'lumotlari' },
+                ].map(t => (
+                  <button key={t.key} type="button"
+                    onClick={() => setProfileTab(t.key as 'account'|'company')}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition ${profileTab===t.key ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── AKKAUNT tab ── */}
+              {profileTab === 'account' && <>
+
               {/* Avatar + info kartasi */}
               <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
                 <div className="flex items-start gap-6">
@@ -1225,6 +1264,158 @@ export default function DashboardPage() {
                   ⎋ Chiqish
                 </button>
               </div>
+
+              </> /* end account tab */}
+
+              {/* ── KORXONA tab ── */}
+              {profileTab === 'company' && (
+                activeOrg ? (
+                  <form onSubmit={saveOrgExt} className="space-y-5">
+
+                    {/* Asosiy ma'lumotlar */}
+                    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+                      <div className="flex items-center justify-between mb-1">
+                        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Asosiy rekvizitlar</h2>
+                        <span className="text-xs text-gray-600">{activeOrg.name}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={lbl}>Tashkilot nomi *</label>
+                          <input className={inp} placeholder="Alfa MChJ"
+                            value={orgExtForm.name||''} onChange={e=>setOrgExtForm({...orgExtForm,name:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>STIR (INN)</label>
+                          <input className={inp} placeholder="123456789"
+                            value={orgExtForm.inn||''} onChange={e=>setOrgExtForm({...orgExtForm,inn:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>Direktor (F.I.Sh)</label>
+                          <input className={inp} placeholder="Karimov Alisher Baxtiyorovich"
+                            value={orgExtForm.director_name||''} onChange={e=>setOrgExtForm({...orgExtForm,director_name:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>Rahbar JSHSHIR (PINFL)</label>
+                          <input className={inp} placeholder="30405704070022"
+                            value={orgExtForm.director_pinfl||''} onChange={e=>setOrgExtForm({...orgExtForm,director_pinfl:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>Bosh buxgalter</label>
+                          <input className={inp} placeholder="Rahimova Dilnoza Sobirovna"
+                            value={orgExtForm.chief_accountant||''} onChange={e=>setOrgExtForm({...orgExtForm,chief_accountant:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>Telefon</label>
+                          <input className={inp} placeholder="+998901234567"
+                            value={orgExtForm.phone||''} onChange={e=>setOrgExtForm({...orgExtForm,phone:e.target.value})}/>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Bank va moliya */}
+                    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+                      <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-1">Bank rekvizitlari</h2>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={lbl}>Bank nomi</label>
+                          <input className={inp} placeholder="Xalq banki"
+                            value={orgExtForm.bank_name||''} onChange={e=>setOrgExtForm({...orgExtForm,bank_name:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>Hisob raqami (X/R)</label>
+                          <input className={inp} placeholder="20208000000000000000"
+                            value={orgExtForm.bank_account||''} onChange={e=>setOrgExtForm({...orgExtForm,bank_account:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>MFO</label>
+                          <input className={inp} placeholder="00873"
+                            value={orgExtForm.mfo||''} onChange={e=>setOrgExtForm({...orgExtForm,mfo:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>OKED (faoliyat kodi)</label>
+                          <input className={inp} placeholder="46130"
+                            value={orgExtForm.oked||''} onChange={e=>setOrgExtForm({...orgExtForm,oked:e.target.value})}/>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Soliq va manzil */}
+                    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+                      <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-1">Soliq va manzil</h2>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={lbl}>QQS ro&apos;yxat raqami</label>
+                          <input className={inp} placeholder="318060007067"
+                            value={orgExtForm.qqsreg||''} onChange={e=>setOrgExtForm({...orgExtForm,qqsreg:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>QQS stavkasi</label>
+                          <select className={inp} value={orgExtForm.qqs_stavka||'yoq'}
+                            onChange={e=>setOrgExtForm({...orgExtForm,qqs_stavka:e.target.value})}>
+                            <option value="yoq">QQS to&apos;lovchi emas</option>
+                            <option value="0">0%</option>
+                            <option value="12">12%</option>
+                            <option value="15">15%</option>
+                          </select>
+                        </div>
+                        <div className="col-span-2">
+                          <label className={lbl}>Yuridik manzil</label>
+                          <input className={inp} placeholder="Toshkent shahri, Yunusobod tumani, ..."
+                            value={orgExtForm.address||''} onChange={e=>setOrgExtForm({...orgExtForm,address:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>Viloyat</label>
+                          <select className={inp} value={orgExtForm.viloyat||''}
+                            onChange={e=>setOrgExtForm({...orgExtForm,viloyat:e.target.value})}>
+                            <option value="">— Tanlang —</option>
+                            {['Toshkent shahri','Toshkent viloyati','Samarqand','Buxoro','Farg\'ona','Andijon','Namangan','Qashqadaryo','Surxondaryo','Navoiy','Jizzax','Sirdaryo','Xorazm','Qoraqalpog\'iston'].map(v=>(
+                              <option key={v} value={v}>{v}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className={lbl}>Tuman/Shahar</label>
+                          <input className={inp} placeholder="Yunusobod tumani"
+                            value={orgExtForm.tuman||''} onChange={e=>setOrgExtForm({...orgExtForm,tuman:e.target.value})}/>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Tovar jo'natuvchi */}
+                    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+                      <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-1">Tovar jo&apos;natuvchi</h2>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={lbl}>F.I.Sh</label>
+                          <input className={inp} placeholder="Karimov Alisher Baxtiyorovich"
+                            value={orgExtForm.sender_name||''} onChange={e=>setOrgExtForm({...orgExtForm,sender_name:e.target.value})}/>
+                        </div>
+                        <div>
+                          <label className={lbl}>JSHSHIR (PINFL)</label>
+                          <input className={inp} placeholder="30405704070022"
+                            value={orgExtForm.sender_pinfl||''} onChange={e=>setOrgExtForm({...orgExtForm,sender_pinfl:e.target.value})}/>
+                        </div>
+                      </div>
+                    </div>
+
+                    {orgExtMsg && (
+                      <div className="bg-emerald-900/40 border border-emerald-700 text-emerald-300 text-sm px-4 py-2.5 rounded-lg">
+                        {orgExtMsg}
+                      </div>
+                    )}
+                    <button type="submit" disabled={orgExtSaving}
+                      className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white py-3 rounded-xl text-sm font-semibold transition">
+                      {orgExtSaving ? 'Saqlanmoqda...' : '💾 O\'zgarishlarni saqlash'}
+                    </button>
+                  </form>
+                ) : (
+                  <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center text-gray-500">
+                    <p className="text-sm">Avval tashkilot qo&apos;shing</p>
+                    <button onClick={() => setTab('organizations')}
+                      className="mt-3 text-blue-400 text-sm hover:text-blue-300">Tashkilotlar →</button>
+                  </div>
+                )
+              )}
 
             </div>
           )}
