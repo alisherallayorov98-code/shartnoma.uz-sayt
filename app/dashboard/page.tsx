@@ -107,7 +107,8 @@ export default function DashboardPage() {
   const [bankForm, setBankForm] = useState(emptyBank)
 
   const [profile, setProfile] = useState({
-    full_name:'', phone:'', company_name:'', company_inn:'',
+    full_name:'', phone:'', lavozim:'', avatar_url:'',
+    company_name:'', company_inn:'',
     company_director:'', company_bank:'', company_account:'', company_mfo:'', company_address:''
   })
   const [profileSaving, setProfileSaving] = useState(false)
@@ -117,6 +118,9 @@ export default function DashboardPage() {
 
   const stampRef = useRef<HTMLInputElement>(null)
   const signatureRef = useRef<HTMLInputElement>(null)
+  const avatarRef = useRef<HTMLInputElement>(null)
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [avatarUploading, setAvatarUploading] = useState(false)
 
   useEffect(() => { init() }, [])
 
@@ -163,6 +167,7 @@ export default function DashboardPage() {
     const { data } = await supabase.from('profiles').select('*').eq('id', uid).single()
     if (data) setProfile({
       full_name: data.full_name||'', phone: data.phone||'',
+      lavozim: data.lavozim||'', avatar_url: data.avatar_url||'',
       company_name: data.company_name||'', company_inn: data.company_inn||'',
       company_director: data.company_director||'', company_bank: data.company_bank||'',
       company_account: data.company_account||'', company_mfo: data.company_mfo||'',
@@ -294,6 +299,20 @@ export default function DashboardPage() {
     if (activeOrg) loadBankAccounts(activeOrg.id)
   }
 
+  async function uploadAvatar(file: File) {
+    setAvatarUploading(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    const ext = file.name.split('.').pop()
+    const path = `avatars/${session!.user.id}.${ext}`
+    const { error: upErr } = await supabase.storage.from('org-assets').upload(path, file, { upsert: true })
+    if (upErr) { alert('Yuklash xatosi: ' + upErr.message); setAvatarUploading(false); return }
+    const { data } = supabase.storage.from('org-assets').getPublicUrl(path)
+    const updated = { ...profile, avatar_url: data.publicUrl }
+    setProfile(updated)
+    await supabase.from('profiles').upsert({ id: session!.user.id, ...updated, updated_at: new Date().toISOString() })
+    setAvatarUploading(false)
+  }
+
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault(); setProfileSaving(true); setProfileMsg('')
     const { data: { session } } = await supabase.auth.getSession()
@@ -305,9 +324,10 @@ export default function DashboardPage() {
   async function changePassword(e: React.FormEvent) {
     e.preventDefault(); setPwdMsg('')
     if (newPassword.length < 8) { setPwdMsg("Parol kamida 8 belgi bo'lishi kerak"); return }
+    if (newPassword !== confirmPassword) { setPwdMsg("Parollar mos kelmaydi"); return }
     const { error } = await supabase.auth.updateUser({ password: newPassword })
     if (error) setPwdMsg('Xatolik: ' + error.message)
-    else { setPwdMsg("Parol muvaffaqiyatli o'zgartirildi ✓"); setNewPassword('') }
+    else { setPwdMsg("Parol muvaffaqiyatli o'zgartirildi ✓"); setNewPassword(''); setConfirmPassword('') }
     setTimeout(() => setPwdMsg(''), 4000)
   }
 
@@ -1057,42 +1077,155 @@ export default function DashboardPage() {
 
           {/* ─── PROFILE ─── */}
           {tab==='profile' && (
-            <div className="max-w-2xl space-y-6">
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 flex items-center gap-5">
-                <div className="w-16 h-16 bg-blue-700 rounded-2xl flex items-center justify-center text-2xl font-bold flex-shrink-0">
-                  {userEmail[0]?.toUpperCase()}
-                </div>
-                <div>
-                  <div className="text-lg font-semibold text-white">{profile.full_name||'Ism kiritilmagan'}</div>
-                  <div className="text-sm text-gray-400 mt-0.5">{userEmail}</div>
-                  <div className="text-xs text-gray-600 mt-1">{profile.phone||'Telefon kiritilmagan'}</div>
+            <div className="max-w-3xl space-y-5">
+
+              {/* Avatar + info kartasi */}
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+                <div className="flex items-start gap-6">
+                  {/* Avatar */}
+                  <div className="relative flex-shrink-0">
+                    <div className="w-20 h-20 rounded-2xl overflow-hidden bg-gradient-to-br from-blue-600 to-blue-800 flex items-center justify-center text-3xl font-bold text-white shadow-lg">
+                      {profile.avatar_url
+                        ? <img src={profile.avatar_url} alt="Avatar" className="w-full h-full object-cover"/>
+                        : userEmail[0]?.toUpperCase()
+                      }
+                    </div>
+                    <button type="button" onClick={() => avatarRef.current?.click()}
+                      disabled={avatarUploading}
+                      className="absolute -bottom-1.5 -right-1.5 w-7 h-7 bg-blue-600 hover:bg-blue-500 rounded-full flex items-center justify-center text-white text-sm shadow-lg transition border-2 border-gray-900"
+                      title="Rasmni o'zgartirish">
+                      {avatarUploading ? '…' : '✎'}
+                    </button>
+                    <input ref={avatarRef} type="file" accept="image/*" className="hidden"
+                      onChange={e => { if (e.target.files?.[0]) uploadAvatar(e.target.files[0]) }}/>
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xl font-bold text-white">{profile.full_name || 'Ism kiritilmagan'}</div>
+                    {profile.lavozim && <div className="text-sm text-blue-400 mt-0.5">{profile.lavozim}</div>}
+                    <div className="text-sm text-gray-400 mt-1">{userEmail}</div>
+                    {profile.phone && <div className="text-sm text-gray-500 mt-0.5">📞 {profile.phone}</div>}
+                  </div>
+
+                  {/* Tarif badge */}
+                  <div className="flex-shrink-0 text-right">
+                    {subscription ? (
+                      <div className={`inline-flex flex-col items-end gap-1`}>
+                        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                          subscription.plan === 'ai_pro' ? 'bg-purple-900/50 text-purple-300 border border-purple-700' :
+                          subscription.plan === 'standart' ? 'bg-blue-900/50 text-blue-300 border border-blue-700' :
+                          'bg-gray-800 text-gray-400 border border-gray-700'
+                        }`}>
+                          {subscription.plan === 'ai_pro' ? '⭐ AI Pro' :
+                           subscription.plan === 'standart' ? '✦ Standart' : 'Bepul'}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {subscription.contracts_used}/{subscription.plan==='free'?'5':'∞'} shartnoma
+                        </span>
+                        {subscription.period_end && subscription.plan !== 'free' && (
+                          <span className="text-xs text-gray-600">
+                            {new Date(subscription.period_end).toLocaleDateString('uz-UZ')} gacha
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-600">Tarif yuklanmoqda...</span>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              <form onSubmit={saveProfile} className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
-                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Shaxsiy ma'lumotlar</h2>
-                <div className="grid grid-cols-2 gap-4">
-                  <div><label className={lbl}>To'liq ism</label>
-                    <input className={inp} placeholder="Alisher Karimov" value={profile.full_name} onChange={e=>setProfile({...profile,full_name:e.target.value})}/></div>
-                  <div><label className={lbl}>Telefon</label>
-                    <input className={inp} placeholder="+998901234567" value={profile.phone} onChange={e=>setProfile({...profile,phone:e.target.value})}/></div>
+              {/* Statistika */}
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: 'Shartnomalar', value: contracts.length, icon: '📄', color: 'blue' },
+                  { label: 'Kontragentlar', value: cps.length, icon: '🤝', color: 'emerald' },
+                  { label: 'Tashkilotlar', value: orgs.length, icon: '🏢', color: 'purple' },
+                ].map(s => (
+                  <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center gap-3">
+                    <span className="text-2xl">{s.icon}</span>
+                    <div>
+                      <div className="text-2xl font-bold text-white">{s.value}</div>
+                      <div className="text-xs text-gray-500">{s.label}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Shaxsiy ma'lumotlar */}
+              <form onSubmit={saveProfile} className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-1">Shaxsiy ma&apos;lumotlar</h2>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={lbl}>To&apos;liq ism</label>
+                    <input className={inp} placeholder="Alisher Karimov"
+                      value={profile.full_name} onChange={e=>setProfile({...profile,full_name:e.target.value})}/>
+                  </div>
+                  <div>
+                    <label className={lbl}>Lavozim</label>
+                    <input className={inp} placeholder="Direktor / Buxgalter / Menejer"
+                      value={profile.lavozim} onChange={e=>setProfile({...profile,lavozim:e.target.value})}/>
+                  </div>
+                  <div className="col-span-2">
+                    <label className={lbl}>Telefon raqam</label>
+                    <input className={inp} placeholder="+998 90 123 45 67"
+                      value={profile.phone} onChange={e=>setProfile({...profile,phone:e.target.value})}/>
+                  </div>
                 </div>
-                {profileMsg && <div className="bg-emerald-900/40 border border-emerald-700 text-emerald-300 text-sm px-4 py-2.5 rounded-lg">{profileMsg}</div>}
+                {profileMsg && (
+                  <div className="bg-emerald-900/40 border border-emerald-700 text-emerald-300 text-sm px-4 py-2.5 rounded-lg">
+                    {profileMsg}
+                  </div>
+                )}
                 <button type="submit" disabled={profileSaving}
-                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-semibold transition">
-                  {profileSaving?'Saqlanmoqda...':'Saqlash'}
+                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-6 py-2.5 rounded-lg text-sm font-semibold transition">
+                  {profileSaving ? 'Saqlanmoqda...' : 'Saqlash'}
                 </button>
               </form>
 
-              <form onSubmit={changePassword} className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
-                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Parolni o'zgartirish</h2>
-                <div><label className={lbl}>Yangi parol</label>
-                  <input type="password" className={inp} placeholder="Kamida 8 belgi" value={newPassword} onChange={e=>setNewPassword(e.target.value)}/></div>
-                {pwdMsg && <div className={`text-sm px-4 py-2.5 rounded-lg ${pwdMsg.includes('✓')?'bg-emerald-900/40 border border-emerald-700 text-emerald-300':'bg-red-900/40 border border-red-700 text-red-300'}`}>{pwdMsg}</div>}
-                <button type="submit" className="w-full border border-gray-700 text-gray-300 hover:bg-gray-800 py-2.5 rounded-lg text-sm font-medium transition">
-                  Parolni o'zgartirish
+              {/* Xavfsizlik */}
+              <form onSubmit={changePassword} className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-4">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-1">Xavfsizlik</h2>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={lbl}>Yangi parol</label>
+                    <input type="password" className={inp} placeholder="Kamida 8 belgi"
+                      value={newPassword} onChange={e=>setNewPassword(e.target.value)}/>
+                  </div>
+                  <div>
+                    <label className={lbl}>Parolni tasdiqlang</label>
+                    <input type="password" className={inp} placeholder="Qayta kiriting"
+                      value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)}/>
+                  </div>
+                </div>
+                {confirmPassword && newPassword !== confirmPassword && (
+                  <p className="text-xs text-red-400">⚠ Parollar mos kelmayapti</p>
+                )}
+                {pwdMsg && (
+                  <div className={`text-sm px-4 py-2.5 rounded-lg ${pwdMsg.includes('✓') ? 'bg-emerald-900/40 border border-emerald-700 text-emerald-300' : 'bg-red-900/40 border border-red-700 text-red-300'}`}>
+                    {pwdMsg}
+                  </div>
+                )}
+                <button type="submit" disabled={!newPassword || newPassword !== confirmPassword}
+                  className="border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-40 px-6 py-2.5 rounded-lg text-sm font-medium transition">
+                  Parolni o&apos;zgartirish
                 </button>
               </form>
+
+              {/* Chiqish */}
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-white">Hisobdan chiqish</div>
+                  <div className="text-xs text-gray-500 mt-0.5">{userEmail}</div>
+                </div>
+                <button type="button"
+                  onClick={async () => { await supabase.auth.signOut(); router.push('/login') }}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-red-900/30 hover:bg-red-900/50 border border-red-800/50 text-red-400 hover:text-red-300 rounded-lg text-sm font-medium transition">
+                  ⎋ Chiqish
+                </button>
+              </div>
+
             </div>
           )}
         </main>
