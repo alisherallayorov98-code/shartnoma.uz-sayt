@@ -1791,10 +1791,15 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                                   onChange={e => updateSpecItem(i, 'nomi', e.target.value)}/>
                               </td>
                               <td className="px-2 py-1.5">
-                                <input list="birliklar-list"
-                                  className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-center"
-                                  value={item.birlik} placeholder="dona"
-                                  onChange={e => updateSpecItem(i, 'birlik', e.target.value)}/>
+                                <select
+                                  className="w-full bg-gray-800/80 border border-gray-700 rounded px-1 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-center appearance-none cursor-pointer"
+                                  value={BIRLIKLAR.includes(item.birlik) ? item.birlik : '__custom'}
+                                  onChange={e => {
+                                    if (e.target.value !== '__custom') updateSpecItem(i, 'birlik', e.target.value)
+                                  }}>
+                                  {BIRLIKLAR.map(b => <option key={b} value={b}>{b}</option>)}
+                                  {!BIRLIKLAR.includes(item.birlik) && <option value="__custom">{item.birlik}</option>}
+                                </select>
                               </td>
                               <td className="px-2 py-1.5">
                                 <input type="number"
