@@ -31,7 +31,10 @@ type Contract = {
   spec_items?: SpecItem[]
 }
 type SpecItem = {
-  nomi: string; birlik: string; miqdori: number; narxi: number; summa: number
+  nomi: string; birlik: string; miqdori: number; narxi: number
+  qqs_foiz: string   // 'siz' | '0' | '12' | '15'
+  qqs_summa: number
+  summa: number      // narx*miqdor + qqs_summa
 }
 type Subscription = {
   id: string; organization_id: string; plan: string
@@ -358,64 +361,66 @@ export default function DashboardPage() {
       doc.setTextColor(20, 20, 20)
       doc.text('SPESIFIKATSIYA (1-ILOVA)', margin, y)
       y += 6
-      // Jadval sarlavhasi
-      const cols = [7, 75, 20, 20, 25, 28] // x positions
-      const headers = ['№', 'Mahsulot/xizmat nomi', 'Birlik', 'Miqdori', 'Narxi', 'Summa']
+      // Ustunlar: № | Nomi | Birlik | Soni | Narx | QQS% | QQS miqdori | Jami
+      const cols  = [7, 58, 16, 14, 22, 14, 22, 22]
+      const headers = ['№', 'Mahsulot/xizmat nomi', 'Birlik', 'Soni', 'Narx', 'QQS%', 'QQS miqdori', 'Jami']
+      const anyQqs = items.some((it: SpecItem) => it.qqs_foiz && it.qqs_foiz !== 'siz')
       doc.setFillColor(240, 242, 245)
       doc.rect(margin, y - 4, contentW, 7, 'F')
       doc.setDrawColor(200, 200, 200)
       doc.rect(margin, y - 4, contentW, 7, 'S')
       doc.setFont('helvetica', 'bold')
-      doc.setFontSize(8)
+      doc.setFontSize(7.5)
       doc.setTextColor(60, 60, 60)
-      let cx = margin + 2
+      let cx = margin + 1
       headers.forEach((h, i) => { doc.text(h, cx, y); cx += cols[i] })
       y += 5
       // Qatorlar
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(8)
       doc.setTextColor(20, 20, 20)
-      items.forEach((item, idx) => {
+      items.forEach((item: SpecItem, idx: number) => {
         if (y > pageH - 30) { doc.addPage(); y = margin + 10 }
         doc.setDrawColor(220, 220, 220)
         doc.line(margin, y + 2, margin + contentW, y + 2)
-        cx = margin + 2
+        cx = margin + 1
+        const qqsLabel = item.qqs_foiz === 'siz' ? 'QQSsiz' : (item.qqs_foiz ? item.qqs_foiz + '%' : '—')
         const row = [
           String(idx + 1),
           item.nomi,
           item.birlik,
           String(item.miqdori),
           item.narxi.toLocaleString(),
+          qqsLabel,
+          item.qqs_summa > 0 ? item.qqs_summa.toLocaleString() : '—',
           item.summa.toLocaleString()
         ]
         row.forEach((cell, i) => {
-          const maxW = cols[i] - 2
+          const maxW = cols[i] - 1
           const truncated = doc.splitTextToSize(cell, maxW)[0] as string
           doc.text(truncated, cx, y); cx += cols[i]
         })
         y += 5
       })
       // Jami qatorlar
-      const total = items.reduce((s, item) => s + item.summa, 0)
-      const hasQqs = (c as any).qqs_enabled
-      const qRate = (c as any).qqs_rate || 12
-      const qSum = hasQqs ? Math.round(total * qRate / 100) : 0
-      const grand = total + qSum
+      const asosiy = items.reduce((s: number, it: SpecItem) => s + it.miqdori * it.narxi, 0)
+      const qqsJami = items.reduce((s: number, it: SpecItem) => s + (it.qqs_summa || 0), 0)
+      const grand = asosiy + qqsJami
       doc.setFont('helvetica', 'bold')
       doc.setFontSize(8)
       doc.setFillColor(245, 245, 245)
-      if (hasQqs) {
+      if (anyQqs) {
         doc.rect(margin, y - 3, contentW, 18, 'F')
         doc.setTextColor(80, 80, 80)
-        doc.text(`Soliqsiz jami: ${total.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
-        doc.text(`QQS (${qRate}%): ${qSum.toLocaleString()} so'm`, margin + contentW - 2, y + 6, { align: 'right' })
+        doc.text(`Soliqsiz jami: ${asosiy.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
+        doc.text(`QQS jami: ${qqsJami.toLocaleString()} so'm`, margin + contentW - 2, y + 6, { align: 'right' })
         doc.setTextColor(20, 20, 20)
         doc.text(`QQS bilan jami: ${grand.toLocaleString()} so'm`, margin + contentW - 2, y + 12, { align: 'right' })
         y += 18
       } else {
         doc.rect(margin, y - 3, contentW, 6, 'F')
         doc.setTextColor(20, 20, 20)
-        doc.text(`Jami: ${total.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
+        doc.text(`Jami: ${grand.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
         y += 8
       }
       return y
@@ -1304,9 +1309,7 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
   const [useTemplate, setUseTemplate] = useState(true)
   const [structure, setStructure] = useState<ContractStructure>({ bolimlar: [] })
   const [specItems, setSpecItems] = useState<SpecItem[]>(form.spec_items || [])
-  const [qqs, setQqsState] = useState(false)
-  const [qqsRate] = useState(12)
-  function setQqs(val: boolean) { setQqsState(val); setForm({ ...form, qqs_enabled: val }) }
+  const [barchaQqs, setBarchaQqs] = useState('')
 
   const BIRLIKLAR = [
     'dona','juft','komplekt',"to'plam","o'ram",'rull','quti','xalta','paket',"bo'lak",'varaq',
@@ -1318,8 +1321,21 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
     'soat','kun','hafta','oy','yil',
     'ta','marta','xizmat','loyiha','bosqich','tur',
   ]
+  const QQS_OPTIONS = [
+    { val: 'siz', label: 'QQSsiz' },
+    { val: '0',   label: '0%' },
+    { val: '12',  label: '12%' },
+    { val: '15',  label: '15%' },
+  ]
 
-  const emptySpecItem = (): SpecItem => ({ nomi: '', birlik: 'dona', miqdori: 1, narxi: 0, summa: 0 })
+  function calcItem(item: SpecItem): SpecItem {
+    const asosiy = item.miqdori * item.narxi
+    const foiz = item.qqs_foiz === 'siz' ? 0 : parseFloat(item.qqs_foiz || '0')
+    const qqs_summa = Math.round(asosiy * foiz / 100)
+    return { ...item, qqs_summa, summa: asosiy + qqs_summa }
+  }
+
+  const emptySpecItem = (): SpecItem => calcItem({ nomi: '', birlik: 'dona', miqdori: 1, narxi: 0, qqs_foiz: 'siz', qqs_summa: 0, summa: 0 })
 
   function addSpecItem() {
     const updated = [...specItems, emptySpecItem()]
@@ -1334,18 +1350,21 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
   function updateSpecItem(i: number, field: keyof SpecItem, value: string | number) {
     const updated = specItems.map((item, idx) => {
       if (idx !== i) return item
-      const next = { ...item, [field]: value }
-      if (field === 'miqdori' || field === 'narxi') {
-        next.summa = Number(next.miqdori) * Number(next.narxi)
-      }
-      return next
+      return calcItem({ ...item, [field]: value })
     })
     setSpecItems(updated)
     setForm({ ...form, spec_items: updated })
   }
-  const specTotal = specItems.reduce((s, item) => s + item.summa, 0)
-  const qqsSum = qqs ? Math.round(specTotal * qqsRate / 100) : 0
-  const specGrand = specTotal + qqsSum
+  function applyBarchaQqs(foiz: string) {
+    setBarchaQqs(foiz)
+    const updated = specItems.map(item => calcItem({ ...item, qqs_foiz: foiz }))
+    setSpecItems(updated)
+    setForm({ ...form, spec_items: updated })
+  }
+  const specAsosiy   = specItems.reduce((s, it) => s + it.miqdori * it.narxi, 0)
+  const specQqsJami  = specItems.reduce((s, it) => s + it.qqs_summa, 0)
+  const specGrand    = specItems.reduce((s, it) => s + it.summa, 0)
+  const hasAnyQqs    = specItems.some(it => it.qqs_foiz !== 'siz' && it.qqs_foiz !== '0')
 
   function buildOrgCp(f: any) {
     const org = orgs.find(o => o.id === f.organization_id) || null
@@ -1716,125 +1735,140 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
 
             {/* ── 3-QADAM: Spesifikatsiya ── */}
             {step === 3 && (
-              <div className="space-y-4">
-
-                {/* datalist — birlik autocomplete */}
+              <div className="space-y-3">
                 <datalist id="birliklar-list">
                   {BIRLIKLAR.map(b => <option key={b} value={b}/>)}
                 </datalist>
 
-                {/* Sarlavha + QQS toggle */}
-                <div className="flex items-start justify-between gap-4">
+                {/* Sarlavha + Barcha uchun QQS */}
+                <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-white font-medium">Mahsulot/xizmatlar ro&apos;yxati</p>
-                    <p className="text-xs text-gray-500 mt-0.5">Ixtiyoriy. PDFga 1-ilova sifatida qo&apos;shiladi.</p>
+                    <p className="text-xs text-gray-500 mt-0.5">PDFga 1-ilova sifatida qo&apos;shiladi.</p>
                   </div>
-                  {/* QQS toggle */}
-                  <div className="flex items-center gap-1 bg-gray-800 rounded-lg p-0.5 flex-shrink-0">
-                    <button type="button" onClick={() => setQqs(false)}
-                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${!qqs ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-white'}`}>
-                      QQSsiz
-                    </button>
-                    <button type="button" onClick={() => setQqs(true)}
-                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${qqs ? 'bg-orange-600 text-white' : 'text-gray-400 hover:text-white'}`}>
-                      QQS 12%
-                    </button>
-                  </div>
+                  {specItems.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">Barcha uchun:</span>
+                      <div className="flex gap-0.5 bg-gray-800 rounded-lg p-0.5">
+                        {QQS_OPTIONS.map(opt => (
+                          <button key={opt.val} type="button"
+                            onClick={() => applyBarchaQqs(opt.val)}
+                            className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${barchaQqs === opt.val ? 'bg-orange-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Jadval */}
                 {specItems.length > 0 && (
-                  <div className="overflow-x-auto rounded-xl border border-gray-700">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="bg-gray-800 text-gray-400 text-left">
-                          <th className="px-3 py-2 w-7">№</th>
-                          <th className="px-2 py-2">Nomi</th>
-                          <th className="px-2 py-2 w-20">O&apos;lchov</th>
-                          <th className="px-2 py-2 w-16 text-right">Miqdori</th>
-                          <th className="px-2 py-2 w-24 text-right">Narxi (so&apos;m)</th>
-                          <th className="px-2 py-2 w-24 text-right">Summa</th>
-                          <th className="px-2 py-2 w-7"></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {specItems.map((item, i) => (
-                          <tr key={i} className="border-t border-gray-700/60 hover:bg-gray-800/20">
-                            <td className="px-3 py-1.5 text-gray-500">{i+1}</td>
-                            <td className="px-2 py-1.5">
-                              <input
-                                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
-                                value={item.nomi} placeholder="Mahsulot yoki xizmat nomi"
-                                onChange={e => updateSpecItem(i, 'nomi', e.target.value)}/>
-                            </td>
-                            <td className="px-2 py-1.5">
-                              <input
-                                list="birliklar-list"
-                                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
-                                value={item.birlik} placeholder="dona"
-                                onChange={e => updateSpecItem(i, 'birlik', e.target.value)}/>
-                            </td>
-                            <td className="px-2 py-1.5">
-                              <input type="number"
-                                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
-                                value={item.miqdori} min={0} step="any"
-                                onChange={e => updateSpecItem(i, 'miqdori', parseFloat(e.target.value)||0)}/>
-                            </td>
-                            <td className="px-2 py-1.5">
-                              <input type="number"
-                                className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
-                                value={item.narxi} min={0}
-                                onChange={e => updateSpecItem(i, 'narxi', parseFloat(e.target.value)||0)}/>
-                            </td>
-                            <td className="px-2 py-1.5 text-right text-gray-200 font-medium">
-                              {item.summa.toLocaleString()}
-                            </td>
-                            <td className="px-2 py-1.5">
-                              <button type="button" onClick={() => removeSpecItem(i)}
-                                className="w-6 h-6 flex items-center justify-center rounded text-gray-600 hover:text-red-400 hover:bg-red-900/20 transition">×</button>
-                            </td>
+                  <div className="rounded-xl border border-gray-700 overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs min-w-[640px]">
+                        <thead>
+                          <tr className="bg-gray-800 text-gray-400 text-left border-b border-gray-700">
+                            <th className="px-3 py-2.5 w-7 text-center">№</th>
+                            <th className="px-2 py-2.5">Nomi *</th>
+                            <th className="px-2 py-2.5 w-20">O&apos;lchov *</th>
+                            <th className="px-2 py-2.5 w-16 text-right">Soni *</th>
+                            <th className="px-2 py-2.5 w-24 text-right">Narx *</th>
+                            <th className="px-2 py-2.5 w-20 text-center">QQS, %</th>
+                            <th className="px-2 py-2.5 w-24 text-right">QQS, miqdori</th>
+                            <th className="px-2 py-2.5 w-24 text-right">Jami *</th>
+                            <th className="px-1 py-2.5 w-7"></th>
                           </tr>
-                        ))}
-
-                        {/* Footer */}
-                        <tr className="border-t border-gray-700 bg-gray-800/30">
-                          <td colSpan={5} className="px-3 py-2 text-right text-gray-400 text-xs">
-                            {qqs ? 'Soliqsiz summa:' : 'Jami summa:'}
-                          </td>
-                          <td className="px-2 py-2 text-right text-white font-semibold text-xs">{specTotal.toLocaleString()}</td>
-                          <td></td>
-                        </tr>
-                        {qqs && (
-                          <>
-                            <tr className="bg-orange-900/10">
-                              <td colSpan={5} className="px-3 py-2 text-right text-orange-400 text-xs">
-                                QQS ({qqsRate}%):
+                        </thead>
+                        <tbody>
+                          {specItems.map((item, i) => (
+                            <tr key={i} className="border-t border-gray-700/50 hover:bg-gray-800/20">
+                              <td className="px-3 py-1.5 text-gray-500 text-center">{i+1}</td>
+                              <td className="px-2 py-1.5">
+                                <input list="birliklar-list"
+                                  className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
+                                  value={item.nomi} placeholder="Mahsulot yoki xizmat nomi"
+                                  onChange={e => updateSpecItem(i, 'nomi', e.target.value)}/>
                               </td>
-                              <td className="px-2 py-2 text-right text-orange-300 font-semibold text-xs">{qqsSum.toLocaleString()}</td>
+                              <td className="px-2 py-1.5">
+                                <input list="birliklar-list"
+                                  className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-center"
+                                  value={item.birlik} placeholder="dona"
+                                  onChange={e => updateSpecItem(i, 'birlik', e.target.value)}/>
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input type="number"
+                                  className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
+                                  value={item.miqdori} min={0} step="any"
+                                  onChange={e => updateSpecItem(i, 'miqdori', parseFloat(e.target.value)||0)}/>
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input type="number"
+                                  className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
+                                  value={item.narxi} min={0}
+                                  onChange={e => updateSpecItem(i, 'narxi', parseFloat(e.target.value)||0)}/>
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <select
+                                  className="w-full bg-gray-800 border border-gray-700 rounded px-1 py-1 text-white focus:outline-none focus:border-orange-500 text-xs text-center"
+                                  value={item.qqs_foiz}
+                                  onChange={e => updateSpecItem(i, 'qqs_foiz', e.target.value)}>
+                                  {QQS_OPTIONS.map(opt => (
+                                    <option key={opt.val} value={opt.val}>{opt.label}</option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td className="px-2 py-1.5 text-right text-orange-400 font-medium">
+                                {item.qqs_summa > 0 ? item.qqs_summa.toLocaleString() : <span className="text-gray-600">—</span>}
+                              </td>
+                              <td className="px-2 py-1.5 text-right text-white font-semibold">
+                                {item.summa.toLocaleString()}
+                              </td>
+                              <td className="px-1 py-1.5">
+                                <button type="button" onClick={() => removeSpecItem(i)}
+                                  className="w-6 h-6 flex items-center justify-center rounded text-gray-600 hover:text-red-400 hover:bg-red-900/20 transition">×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t border-gray-600 bg-gray-800/50 text-xs">
+                            <td colSpan={6} className="px-3 py-2 text-right text-gray-400">
+                              {hasAnyQqs ? 'Soliqsiz jami:' : 'Jami:'}
+                            </td>
+                            <td className="px-2 py-2 text-right text-gray-400">{hasAnyQqs ? specQqsJami.toLocaleString() : ''}</td>
+                            <td className="px-2 py-2 text-right text-white font-bold">{hasAnyQqs ? specAsosiy.toLocaleString() : specGrand.toLocaleString()}</td>
+                            <td></td>
+                          </tr>
+                          {hasAnyQqs && (
+                            <tr className="bg-orange-900/10 text-xs border-t border-orange-800/30">
+                              <td colSpan={6} className="px-3 py-2 text-right text-gray-400">QQS jami:</td>
+                              <td className="px-2 py-2 text-right text-orange-400 font-semibold">{specQqsJami.toLocaleString()}</td>
+                              <td></td>
                               <td></td>
                             </tr>
-                            <tr className="border-t border-orange-700/40 bg-orange-900/10">
-                              <td colSpan={5} className="px-3 py-2 text-right text-white font-bold text-xs">
-                                QQS bilan jami:
-                              </td>
-                              <td className="px-2 py-2 text-right text-orange-300 font-bold text-sm">{specGrand.toLocaleString()}</td>
+                          )}
+                          {hasAnyQqs && (
+                            <tr className="bg-orange-900/10 text-xs border-t border-orange-700/30">
+                              <td colSpan={6} className="px-3 py-2.5 text-right text-white font-bold">QQS bilan jami:</td>
+                              <td className="px-2 py-2.5 text-right text-orange-300 font-bold">{specQqsJami.toLocaleString()}</td>
+                              <td className="px-2 py-2.5 text-right text-orange-300 font-bold text-sm">{specGrand.toLocaleString()}</td>
                               <td></td>
                             </tr>
-                          </>
-                        )}
-                      </tbody>
-                    </table>
+                          )}
+                        </tfoot>
+                      </table>
+                    </div>
                   </div>
                 )}
 
                 <button type="button" onClick={addSpecItem}
-                  className="w-full border-2 border-dashed border-gray-700 hover:border-emerald-600 text-gray-500 hover:text-emerald-400 py-3 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2">
+                  className="w-full border-2 border-dashed border-gray-700 hover:border-emerald-600 text-gray-500 hover:text-emerald-400 py-2.5 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2">
                   + Mahsulot/xizmat qo&apos;shish
                 </button>
-
                 {specItems.length === 0 && (
-                  <p className="text-center text-gray-600 text-xs py-2">
-                    Spesifikatsiya ixtiyoriy — qo&apos;shmasangiz PDFda jadval bo&apos;lmaydi.
+                  <p className="text-center text-gray-600 text-xs py-1">
+                    Ixtiyoriy — qo&apos;shmasangiz PDFda jadval bo&apos;lmaydi.
                   </p>
                 )}
               </div>
