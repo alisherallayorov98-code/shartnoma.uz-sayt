@@ -1297,6 +1297,53 @@ function ModalActions({ onClose, saving }: { onClose: ()=>void; saving: boolean 
   )
 }
 
+// ─── Birlik qidiruvli dropdown ────────────────────────────
+function BirlikPicker({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: string[] }) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false); setSearch('')
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  const filtered = search.trim()
+    ? options.filter(b => b.toLowerCase().includes(search.toLowerCase()))
+    : options
+
+  return (
+    <div ref={ref} className="relative">
+      <input
+        className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-center cursor-pointer"
+        value={open ? search : value}
+        placeholder={open ? 'Izlash...' : 'dona'}
+        onFocus={() => { setOpen(true); setSearch('') }}
+        onChange={e => setSearch(e.target.value)}
+      />
+      {open && (
+        <div className="absolute z-50 top-full left-0 mt-0.5 bg-gray-850 border border-gray-600 rounded-lg shadow-2xl max-h-44 overflow-y-auto min-w-[130px]"
+          style={{ background: '#1a2236' }}>
+          {filtered.length > 0 ? filtered.map(b => (
+            <button key={b} type="button"
+              className="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-blue-600 hover:text-white transition-colors"
+              onMouseDown={() => { onChange(b); setOpen(false); setSearch('') }}>
+              {b}
+            </button>
+          )) : (
+            <div className="px-3 py-2 text-xs text-gray-500 text-center">Topilmadi</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Contract Modal ───────────────────────────────────────
 function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp, lbl }: {
   orgs: Org[]; cps: Counterparty[]
@@ -1772,7 +1819,7 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                             <th className="px-3 py-2.5 w-7 text-center">№</th>
                             <th className="px-2 py-2.5">Nomi *</th>
                             <th className="px-2 py-2.5 w-20">O&apos;lchov *</th>
-                            <th className="px-2 py-2.5 w-16 text-right">Soni *</th>
+                            <th className="px-2 py-2.5 w-24 text-right">Soni *</th>
                             <th className="px-2 py-2.5 w-24 text-right">Narx *</th>
                             <th className="px-2 py-2.5 w-20 text-center">QQS, %</th>
                             <th className="px-2 py-2.5 w-24 text-right">QQS, miqdori</th>
@@ -1791,19 +1838,15 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                                   onChange={e => updateSpecItem(i, 'nomi', e.target.value)}/>
                               </td>
                               <td className="px-2 py-1.5">
-                                <select
-                                  className="w-full bg-gray-800/80 border border-gray-700 rounded px-1 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-center appearance-none cursor-pointer"
-                                  value={BIRLIKLAR.includes(item.birlik) ? item.birlik : '__custom'}
-                                  onChange={e => {
-                                    if (e.target.value !== '__custom') updateSpecItem(i, 'birlik', e.target.value)
-                                  }}>
-                                  {BIRLIKLAR.map(b => <option key={b} value={b}>{b}</option>)}
-                                  {!BIRLIKLAR.includes(item.birlik) && <option value="__custom">{item.birlik}</option>}
-                                </select>
+                                <BirlikPicker
+                                  value={item.birlik}
+                                  options={BIRLIKLAR}
+                                  onChange={v => updateSpecItem(i, 'birlik', v)}
+                                />
                               </td>
                               <td className="px-2 py-1.5">
                                 <input type="number"
-                                  className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
+                                  className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-2 text-white focus:outline-none focus:border-blue-500 text-sm font-medium text-right"
                                   value={item.miqdori} min={0} step="any"
                                   onChange={e => updateSpecItem(i, 'miqdori', parseFloat(e.target.value)||0)}/>
                               </td>
@@ -1815,7 +1858,7 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                               </td>
                               <td className="px-2 py-1.5">
                                 <select
-                                  className="w-full bg-gray-800 border border-gray-700 rounded px-1 py-1 text-white focus:outline-none focus:border-orange-500 text-xs text-center"
+                                  className="w-full bg-gray-800 border border-gray-700 rounded px-1 py-1 text-white focus:outline-none focus:border-orange-500 text-xs text-center cursor-pointer"
                                   value={item.qqs_foiz}
                                   onChange={e => updateSpecItem(i, 'qqs_foiz', e.target.value)}>
                                   {QQS_OPTIONS.map(opt => (
