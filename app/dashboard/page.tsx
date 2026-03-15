@@ -88,6 +88,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [cpSearch, setCpSearch] = useState('')
+  const [cpDetail, setCpDetail] = useState<Counterparty | null>(null)
+  const [editingCp, setEditingCp] = useState<Counterparty | null>(null)
   const [statusFilter, setStatusFilter] = useState('all')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [orgDropdown, setOrgDropdown] = useState(false)
@@ -250,8 +252,19 @@ export default function DashboardPage() {
   async function saveCp(e: React.FormEvent) {
     e.preventDefault(); setSaving(true)
     const { data: { session } } = await supabase.auth.getSession()
-    await supabase.from('counterparties').insert({ ...cpForm, user_id: session!.user.id })
+    if (editingCp) {
+      await supabase.from('counterparties').update(cpForm).eq('id', editingCp.id)
+      setEditingCp(null)
+    } else {
+      await supabase.from('counterparties').insert({ ...cpForm, user_id: session!.user.id })
+    }
     setModal(null); setCpForm(emptyCp); setSaving(false); loadCps()
+  }
+
+  async function deleteCp(id: string) {
+    if (!confirm("Kontragentni o'chirishni tasdiqlaysizmi?")) return
+    await supabase.from('counterparties').delete().eq('id', id)
+    setCpDetail(null); loadCps()
   }
 
   async function saveContract(e: React.FormEvent) {
@@ -1057,12 +1070,13 @@ export default function DashboardPage() {
           {/* ─── COUNTERPARTIES ─── */}
           {tab==='counterparties' && (
             <div className="space-y-4">
+              {/* Qidiruv */}
               <div className="relative">
                 <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                 </svg>
                 <input value={cpSearch} onChange={e=>setCpSearch(e.target.value)}
-                  placeholder="Tashkilot nomi yoki STR (INN) raqami bo'yicha qidirish..."
+                  placeholder="Tashkilot nomi yoki STR (INN) bo'yicha qidirish..."
                   className="w-full bg-gray-900 border border-gray-800 text-white rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
               </div>
 
@@ -1070,28 +1084,65 @@ export default function DashboardPage() {
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-16 text-center">
                   <div className="text-5xl mb-4">🤝</div>
                   <p className="text-gray-400 font-medium">{cpSearch ? 'Kontragent topilmadi' : "Kontragent qo'shilmagan"}</p>
+                  {!cpSearch && <button onClick={()=>setModal('cp')} className="mt-3 text-blue-400 text-sm hover:text-blue-300">+ Qo'shish</button>}
                 </div>
               ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {filteredCps.map(cp => (
-                    <div key={cp.id} className="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-xl p-5 transition">
-                      <div className="flex items-start gap-4 mb-4">
-                        <div className="w-11 h-11 bg-orange-900 rounded-xl flex items-center justify-center text-orange-300 font-bold text-xl flex-shrink-0">
-                          {cp.name[0]?.toUpperCase()}
-                        </div>
-                        <div>
-                          <h3 className="font-semibold text-white">{cp.name}</h3>
-                          <p className="text-xs text-gray-500 mt-0.5 font-mono">STR: {cp.inn||'—'}</p>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-y-2 gap-x-4 text-xs">
-                        {[['Rahbar',cp.director_name],['Bank',cp.bank_name],['Hisob raqam',cp.bank_account],['MFO',cp.mfo]].map(([l,v])=>(
-                          <div key={l}><span className="text-gray-500">{l}: </span><span className="text-gray-300">{v||'—'}</span></div>
-                        ))}
-                        <div className="col-span-2"><span className="text-gray-500">Manzil: </span><span className="text-gray-300">{cp.address||'—'}</span></div>
-                      </div>
-                    </div>
-                  ))}
+                <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-800 text-gray-500 text-xs uppercase tracking-wider">
+                        <th className="px-4 py-3 text-left w-8">№</th>
+                        <th className="px-4 py-3 text-left">Tashkilot nomi</th>
+                        <th className="px-4 py-3 text-left">STR / INN</th>
+                        <th className="px-4 py-3 text-left">Rahbar</th>
+                        <th className="px-4 py-3 text-left">Bank</th>
+                        <th className="px-4 py-3 text-left">MFO</th>
+                        <th className="px-4 py-3 text-center">Shartnomalar</th>
+                        <th className="px-4 py-3 w-20"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredCps.map((cp, idx) => {
+                        const cpContracts = contracts.filter(c => c.counterparty_id === cp.id).length
+                        return (
+                          <tr key={cp.id}
+                            className="border-t border-gray-800 hover:bg-gray-800/40 cursor-pointer transition group"
+                            onClick={() => setCpDetail(cp)}>
+                            <td className="px-4 py-3 text-gray-600 text-xs">{idx+1}</td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 bg-orange-900/60 rounded-lg flex items-center justify-center text-orange-300 font-bold text-sm flex-shrink-0">
+                                  {cp.name[0]?.toUpperCase()}
+                                </div>
+                                <span className="font-medium text-white">{cp.name}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 text-gray-400 font-mono text-xs">{cp.inn||'—'}</td>
+                            <td className="px-4 py-3 text-gray-400 text-xs">{cp.director_name||'—'}</td>
+                            <td className="px-4 py-3 text-gray-500 text-xs max-w-[140px] truncate">{cp.bank_name||'—'}</td>
+                            <td className="px-4 py-3 text-gray-500 text-xs font-mono">{cp.mfo||'—'}</td>
+                            <td className="px-4 py-3 text-center">
+                              {cpContracts > 0
+                                ? <span className="bg-blue-900/40 text-blue-400 text-xs px-2 py-0.5 rounded-full">{cpContracts}</span>
+                                : <span className="text-gray-700 text-xs">—</span>
+                              }
+                            </td>
+                            <td className="px-4 py-3" onClick={e=>e.stopPropagation()}>
+                              <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition">
+                                <button onClick={()=>{ setEditingCp(cp); setCpForm({name:cp.name,inn:cp.inn,director_name:cp.director_name,bank_name:cp.bank_name,bank_account:cp.bank_account,mfo:cp.mfo,address:cp.address}); setModal('cp') }}
+                                  className="p-1.5 bg-gray-700 hover:bg-blue-700 rounded text-xs" title="Tahrirlash">✎</button>
+                                <button onClick={()=>deleteCp(cp.id)}
+                                  className="p-1.5 bg-gray-700 hover:bg-red-800 rounded text-xs" title="O'chirish">🗑</button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                  <div className="px-4 py-3 border-t border-gray-800 text-xs text-gray-600">
+                    Jami: {filteredCps.length} ta kontragent
+                  </div>
                 </div>
               )}
             </div>
@@ -1449,7 +1500,7 @@ export default function DashboardPage() {
       )}
 
       {modal==='cp' && (
-        <Modal title="Kontragent qo'shish" onClose={()=>setModal(null)}>
+        <Modal title={editingCp ? "Kontragentni tahrirlash" : "Kontragent qo'shish"} onClose={()=>{ setModal(null); setEditingCp(null); setCpForm(emptyCp) }}>
           <form onSubmit={saveCp} className="space-y-4">
             <div><label className={lbl}>Tashkilot nomi *</label>
               <input className={inp} required placeholder="Beta Qurilish MChJ" value={cpForm.name} onChange={e=>setCpForm({...cpForm,name:e.target.value})}/></div>
@@ -1467,9 +1518,107 @@ export default function DashboardPage() {
               <div><label className={lbl}>Manzil</label>
                 <input className={inp} placeholder="Samarqand, ..." value={cpForm.address} onChange={e=>setCpForm({...cpForm,address:e.target.value})}/></div>
             </div>
-            <ModalActions onClose={()=>setModal(null)} saving={saving}/>
+            <ModalActions onClose={()=>{ setModal(null); setEditingCp(null); setCpForm(emptyCp) }} saving={saving}/>
           </form>
         </Modal>
+      )}
+
+      {/* ─── KONTRAGENT DETAIL MODAL ─── */}
+      {cpDetail && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 sticky top-0 bg-gray-900 z-10">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-orange-900/60 rounded-xl flex items-center justify-center text-orange-300 font-bold text-lg">
+                  {cpDetail.name[0]?.toUpperCase()}
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-white">{cpDetail.name}</h2>
+                  {cpDetail.inn && <p className="text-xs text-gray-500 font-mono">STR: {cpDetail.inn}</p>}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={()=>{ setEditingCp(cpDetail); setCpForm({name:cpDetail.name,inn:cpDetail.inn,director_name:cpDetail.director_name,bank_name:cpDetail.bank_name,bank_account:cpDetail.bank_account,mfo:cpDetail.mfo,address:cpDetail.address}); setModal('cp'); setCpDetail(null) }}
+                  className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs font-medium transition">✎ Tahrirlash</button>
+                <button onClick={()=>deleteCp(cpDetail.id)}
+                  className="px-3 py-1.5 bg-red-900/50 hover:bg-red-800 text-red-400 hover:text-white rounded-lg text-xs font-medium transition border border-red-800/50">🗑 O'chirish</button>
+                <button onClick={()=>setCpDetail(null)}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition text-xl">×</button>
+              </div>
+            </div>
+            <div className="p-6 space-y-5">
+
+              {/* Asosiy ma'lumotlar */}
+              <div>
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Asosiy ma&apos;lumotlar</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    ['Tashkilot nomi', cpDetail.name],
+                    ['STR / INN', cpDetail.inn],
+                    ['Rahbar', cpDetail.director_name],
+                    ['Manzil', cpDetail.address],
+                  ].map(([l,v]) => (
+                    <div key={l} className={`bg-gray-800/50 rounded-lg px-3 py-2.5 ${l==='Manzil'||l==='Tashkilot nomi'?'col-span-2':''}`}>
+                      <div className="text-xs text-gray-500 mb-0.5">{l}</div>
+                      <div className="text-sm text-white font-medium">{v||'—'}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Bank */}
+              <div>
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Bank rekvizitlari</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    ['Bank nomi', cpDetail.bank_name],
+                    ['MFO', cpDetail.mfo],
+                    ['Hisob raqami (X/R)', cpDetail.bank_account],
+                  ].map(([l,v]) => (
+                    <div key={l} className={`bg-gray-800/50 rounded-lg px-3 py-2.5 ${l==='Hisob raqami (X/R)'?'col-span-2':''}`}>
+                      <div className="text-xs text-gray-500 mb-0.5">{l}</div>
+                      <div className="text-sm text-white font-mono">{v||'—'}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Shartnomalar */}
+              {(() => {
+                const cpContracts = contracts.filter(c => c.counterparty_id === cpDetail.id)
+                return cpContracts.length > 0 ? (
+                  <div>
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                      Shartnomalar ({cpContracts.length} ta)
+                    </h3>
+                    <div className="space-y-2">
+                      {cpContracts.slice(0,5).map(c => (
+                        <div key={c.id} className="bg-gray-800/50 rounded-lg px-3 py-2.5 flex items-center justify-between">
+                          <div>
+                            <span className="text-sm text-white font-medium">№ {c.contract_number}</span>
+                            <span className="text-xs text-gray-500 ml-2">{c.contract_date}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-400">{c.amount?.toLocaleString()} so'm</span>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${
+                              c.status==='active'?'bg-emerald-900/40 text-emerald-400':
+                              c.status==='completed'?'bg-blue-900/40 text-blue-400':
+                              'bg-gray-800 text-gray-500'}`}>
+                              {c.status==='active'?'Faol':c.status==='completed'?'Bajarilgan':'Qoralama'}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                      {cpContracts.length > 5 && (
+                        <p className="text-xs text-gray-600 text-center">va yana {cpContracts.length-5} ta...</p>
+                      )}
+                    </div>
+                  </div>
+                ) : null
+              })()}
+            </div>
+          </div>
+        </div>
       )}
 
       {modal==='bankAccount' && (
