@@ -15,10 +15,11 @@ export type TemplateData = {
   cp_director: string
   amount: number
   amount_text: string
+  extra?: Record<string, string>
 }
 
 function fill(text: string, d: Partial<TemplateData>): string {
-  return text
+  let result = text
     .replace(/\[RAQAM\]/g, d.contract_number || '___')
     .replace(/\[SANA\]/g, d.contract_date || '___')
     .replace(/\[SHAHAR\]/g, d.city || 'Toshkent')
@@ -30,6 +31,12 @@ function fill(text: string, d: Partial<TemplateData>): string {
     .replace(/\[IJROCHI_RAHBAR\]/g, d.cp_director || '___')
     .replace(/\[SUMMA\]/g, d.amount?.toLocaleString() || '___')
     .replace(/\[SUMMA_MATN\]/g, d.amount_text || '___')
+  if (d.extra) {
+    for (const [key, value] of Object.entries(d.extra)) {
+      if (value) result = result.replace(new RegExp(`\\[${key.toUpperCase()}\\]`, 'g'), value)
+    }
+  }
+  return result
 }
 
 // Summani so'zga aylantirish
@@ -78,8 +85,8 @@ const STRUCTURES: Record<string, (d: Partial<TemplateData>) => ContractStructure
       { matn: "To'lov sanasi — Sotuvchining bank hisobvarag'iga pul tushgan sana hisoblanadi." },
     ]},
     { sarlavha: "TOVARNI YETKAZIB BERISH", bandlar: [
-      { matn: "Tovarni yetkazib berish muddati: shartnoma imzolanganidan keyin 30 (o'ttiz) kalendar kuni ichida." },
-      { matn: "Tovar yetkazib berish joyi: Xaridorning yuridik manzili yoki tomonlar kelishgan joy." },
+      { matn: fill("Tovarni yetkazib berish muddati: [YETKAZISH_MUDDAT].", d) },
+      { matn: fill("Tovar yetkazib berish joyi: [YETKAZISH_JOY].", d) },
       { matn: "Tovar topshirilganda Xaridor tovar-pul hujjatlariga imzo qo'yadi." },
     ]},
     { sarlavha: "TOMONLARNING HUQUQ VA MAJBURIYATLARI", bandlar: [
@@ -109,17 +116,16 @@ const STRUCTURES: Record<string, (d: Partial<TemplateData>) => ContractStructure
   xizmat: (d) => ({ bolimlar: [
     { sarlavha: "SHARTNOMA PREDMETI", bandlar: [
       { matn: `[IJROCHI] (keyingi o'rinlarda "Ijrochi") [BUYURTMACHI] (keyingi o'rinlarda "Buyurtmachi") ga xizmatlarni ko'rsatish majburiyatini oladi.` },
-      { matn: "Ko'rsatiladigan xizmatlarning to'liq ro'yxati va tavsifi ushbu shartnomaga ilova qilinadigan Texnik topshiriqda belgilanadi." },
+      { matn: fill("Ko'rsatiladigan xizmatning tavsifi: [XIZMAT_TAVSIF].", d) },
       { matn: "Xizmatlar amaldagi qonunchilik va tomonlar kelishgan talablarga muvofiq ko'rsatiladi." },
     ]},
     { sarlavha: "XIZMAT NARXI VA TO'LOV TARTIBI", bandlar: [
       { matn: `Ko'rsatilgan xizmatlar uchun umumiy to'lov miqdori [SUMMA] ([SUMMA_MATN]) so'mni tashkil etadi.` },
-      { matn: "Shartnoma imzolanganidan keyin 3 (uch) ish kuni ichida 50% avans to'lovi amalga oshiriladi." },
-      { matn: "Xizmatlar to'liq ko'rsatilgandan va qabul dalolatnomasiga imzo qo'yilgandan keyin 5 (besh) ish kuni ichida qolgan 50% to'lanadi." },
+      { matn: fill("To'lov tartibi: [XIZMAT_TOLOV].", d) },
     ]},
     { sarlavha: "XIZMAT KO'RSATISH MUDDATI", bandlar: [
-      { matn: "Xizmat ko'rsatishning boshlanish sanasi: shartnoma imzolanganidan keyin 3 (uch) ish kuni." },
-      { matn: "Xizmat ko'rsatishning tugash muddati: tomonlar qo'shimcha kelishuvi bilan belgilanadi." },
+      { matn: fill("Xizmat ko'rsatishning boshlanish sanasi: [XIZMAT_BOSHLANISH].", d) },
+      { matn: fill("Xizmat ko'rsatishning tugash sanasi: [XIZMAT_TUGASH].", d) },
     ]},
     { sarlavha: "TOMONLARNING MAJBURIYATLARI", bandlar: [
       { matn: "Ijrochi: xizmatlarni belgilangan sifat va muddatda ko'rsatishi; xizmat ko'rsatish davomida olingan maxfiy ma'lumotlarni oshkor etmasligi shart." },
@@ -145,11 +151,12 @@ const STRUCTURES: Record<string, (d: Partial<TemplateData>) => ContractStructure
   ijara: (d) => ({ bolimlar: [
     { sarlavha: "SHARTNOMA PREDMETI", bandlar: [
       { matn: `[IJROCHI] (keyingi o'rinlarda "Ijaraberuvchi") [BUYURTMACHI] (keyingi o'rinlarda "Ijarachi") ga mol-mulkni vaqtincha foydalanish uchun beradi.` },
-      { matn: "Ijara ob'ekti: manzil / tavsifi: _____________________, maydoni: _____________________ ." },
+      { matn: fill("Ijara ob'ekti manzili: [IJARA_MANZIL]. Maydoni: [IJARA_MAYDON] m².", d) },
       { matn: "Ijara ob'ekti ushbu shartnoma imzolanganida ko'rsatilgan holda topshiriladi." },
     ]},
     { sarlavha: "IJARA MUDDATI", bandlar: [
-      { matn: "Ijara muddati: shartnoma imzolanganidan boshlab 12 (o'n ikki) oy." },
+      { matn: fill("Ijara muddati: [IJARA_MUDDAT].", d) },
+      { matn: fill("Ijara boshlanish sanasi: [IJARA_BOSHLANISH]. Tugash sanasi: [IJARA_TUGASH].", d) },
       { matn: "Ijara muddati tugagandan keyin tomonlar kelishgan holda shartnoma uzaytirilishi mumkin." },
     ]},
     { sarlavha: "IJARA HAQI", bandlar: [
@@ -177,12 +184,12 @@ const STRUCTURES: Record<string, (d: Partial<TemplateData>) => ContractStructure
   pudrat: (d) => ({ bolimlar: [
     { sarlavha: "SHARTNOMA PREDMETI", bandlar: [
       { matn: `[IJROCHI] (keyingi o'rinlarda "Pudratchi") [BUYURTMACHI] (keyingi o'rinlarda "Buyurtmachi") ning topshirig'iga binoan ishlarni bajarish majburiyatini oladi.` },
-      { matn: "Ishning nomi va hajmi: _____________________. Ish joyi (ob'ekt): _____________________." },
+      { matn: fill("Ish joyi (ob'ekt): [PUDRAT_OBEKT]. Ishlarning tavsifi: [PUDRAT_TAVSIF].", d) },
       { matn: "Texnik talablar: ushbu shartnomaga ilova qilinadigan Texnik topshiriqqa muvofiq." },
     ]},
     { sarlavha: "ISH BAJARISH MUDDATI", bandlar: [
-      { matn: "Ishlarni boshlash sanasi: shartnoma imzolanganidan keyin 5 (besh) ish kuni ichida." },
-      { matn: "Ishlarni yakunlash muddati: _____________________." },
+      { matn: fill("Ishlarni boshlash sanasi: [PUDRAT_BOSHLANISH].", d) },
+      { matn: fill("Ishlarni yakunlash muddati: [PUDRAT_TUGASH].", d) },
     ]},
     { sarlavha: "NARX VA TO'LOV TARTIBI", bandlar: [
       { matn: `Ishlarning umumiy narxi [SUMMA] ([SUMMA_MATN]) so'mni tashkil etadi.` },
@@ -208,11 +215,11 @@ const STRUCTURES: Record<string, (d: Partial<TemplateData>) => ContractStructure
 
   qoshimcha: (d) => ({ bolimlar: [
     { sarlavha: "ASOSIY SHARTNOMA MA'LUMOTLARI", bandlar: [
-      { matn: "Ushbu qo'shimcha shartnoma _______ raqamli _______ sanasida tuzilgan asosiy shartnomaning ajralmas qismi hisoblanadi." },
+      { matn: fill("Ushbu qo'shimcha shartnoma [ASOSIY_RAQAM] raqamli [ASOSIY_SANA] sanasida tuzilgan asosiy shartnomaning ajralmas qismi hisoblanadi.", d) },
     ]},
     { sarlavha: "O'ZGARTIRISHLAR", bandlar: [
       { matn: "Asosiy shartnomaning ___ bandiga quyidagi o'zgartirish kiritilsin: eski tahrir o'rniga yangi tahrir qabul qilinsin." },
-      { matn: "O'zgartirishning mazmuni: _____________________." },
+      { matn: fill("O'zgartirishning mazmuni: [OZGARTIRISH].", d) },
     ]},
     { sarlavha: "MOLIYAVIY O'ZGARISHLAR", bandlar: [
       { matn: `Ushbu qo'shimcha shartnoma asosida tomonlar o'rtasidagi hisob-kitob summasi [SUMMA] ([SUMMA_MATN]) so'mni tashkil etadi.` },
@@ -227,16 +234,16 @@ const STRUCTURES: Record<string, (d: Partial<TemplateData>) => ContractStructure
   moliyaviy: (d) => ({ bolimlar: [
     { sarlavha: "SHARTNOMA PREDMETI", bandlar: [
       { matn: `[BUYURTMACHI] (keyingi o'rinlarda "Qarz beruvchi") [IJROCHI] (keyingi o'rinlarda "Qarz oluvchi") ga moliyaviy yordam sifatida [SUMMA] ([SUMMA_MATN]) so'm miqdorida qarz beradi.` },
-      { matn: "Ushbu qarz foizsiz beriladi (yoki: yillik ____% foiz bilan beriladi)." },
-      { matn: "Qarz maqsadi: _____________________." },
+      { matn: fill("Qarz foiz shartlari: [QARZ_FOIZ].", d) },
+      { matn: fill("Qarz maqsadi: [QARZ_MAQSAD].", d) },
     ]},
     { sarlavha: "QARZNI BERISH TARTIBI", bandlar: [
       { matn: "Qarz shartnoma imzolanganidan keyin 5 (besh) bank ishi kuni ichida Qarz oluvchining hisob raqamiga o'tkaziladi." },
       { matn: "Pul o'tkazilgandan keyin Qarz oluvchi qabul qilganini tasdiqlovchi hujjat imzolaydi." },
     ]},
     { sarlavha: "QARZNI QAYTARISH TARTIBI", bandlar: [
-      { matn: "Qarz oluvchi qarzni ___ oy (yil) ichida to'liq qaytarish majburiyatini oladi." },
-      { matn: "Qaytarish jadvalı: har oyning ___ kuniga qadar oylik to'lov: _______ so'm." },
+      { matn: fill("Qarz oluvchi qarzni [QARZ_MUDDAT] ichida to'liq qaytarish majburiyatini oladi.", d) },
+      { matn: fill("Qaytarish tartibi: [QARZ_TARTIB].", d) },
       { matn: "Muddatidan oldin qaytarish mumkin, bu haqda 3 (uch) kun oldin xabar berish kerak." },
     ]},
     { sarlavha: "MAS'ULIYAT", bandlar: [
@@ -250,8 +257,8 @@ const STRUCTURES: Record<string, (d: Partial<TemplateData>) => ContractStructure
   daval: (d) => ({ bolimlar: [
     { sarlavha: "SHARTNOMA PREDMETI", bandlar: [
       { matn: `[BUYURTMACHI] (keyingi o'rinlarda "Buyurtmachi") [IJROCHI] (keyingi o'rinlarda "Qayta ishlovchi") ga xom ashyo (daval material) beradi, Qayta ishlovchi esa uni qayta ishlab tayyor mahsulot sifatida qaytaradi.` },
-      { matn: "Daval material turi va miqdori: _____________________." },
-      { matn: "Tayyor mahsulot turi va hajmi: _____________________." },
+      { matn: fill("Daval material: [DAVAL_MATERIAL], miqdori: [DAVAL_MIQDOR].", d) },
+      { matn: fill("Tayyor mahsulot: [DAVAL_MAHSULOT]. Qayta ishlash muddati: [DAVAL_MUDDAT].", d) },
     ]},
     { sarlavha: "TOMONLARNING MAJBURIYATLARI", bandlar: [
       { matn: "Buyurtmachi: xom ashyoni kelishilgan miqdor va muddatda yetkazib berishi; xom ashyo sifatiga doir hujjatlarni taqdim etishi shart." },

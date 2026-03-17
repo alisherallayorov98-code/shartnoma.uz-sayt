@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { CONTRACT_TEMPLATES, CONTRACT_TYPE_NAMES, fillTemplate } from '@/lib/contractTemplates'
 import { getStructure, structureToText, numberToWords, ContractStructure } from '@/lib/contractStructures'
+import { DEFAULT_TEMPLATES, type AppTemplate } from '@/lib/defaultTemplates'
 
 // ─── Types ───────────────────────────────────────────────
 type Org = {
@@ -26,6 +27,7 @@ type BankAccount = {
 type Counterparty = {
   id: string; name: string; inn: string; director_name: string
   bank_name: string; bank_account: string; mfo: string; address: string
+  phone?: string; qqsreg?: string
 }
 type Contract = {
   id: string; contract_number: string; contract_date: string
@@ -40,6 +42,16 @@ type SpecItem = {
   qqs_foiz: string   // 'siz' | '0' | '12' | '15'
   qqs_summa: number
   summa: number      // narx*miqdor + qqs_summa
+}
+type Specification = {
+  id: string
+  organization_id: string
+  contract_id: string | null
+  spec_number: string
+  items: SpecItem[]
+  notes: string
+  created_at: string
+  contracts?: { contract_number: string; contract_date: string; counterparties?: { name: string } }
 }
 type Subscription = {
   id: string; organization_id: string; plan: string
@@ -66,11 +78,12 @@ const CONTRACT_TYPES: Record<string, string> = {
 }
 const FREE_LIMIT = 5
 const NAV = [
-  { key: 'overview',       icon: '▣',  label: "Umumiy ko'rinish" },
-  { key: 'contracts',      icon: '📄', label: 'Shartnomalar' },
-  { key: 'organizations',  icon: '🏢', label: 'Tashkilotlarim' },
-  { key: 'counterparties', icon: '🤝', label: 'Kontragentlar' },
-  { key: 'profile',        icon: '👤', label: 'Profil' },
+  { key: 'overview',        icon: '▣',  label: "Umumiy ko'rinish" },
+  { key: 'contracts',       icon: '📄', label: 'Shartnomalar' },
+  { key: 'specifications',  icon: '📋', label: 'Spesifikatsiyalar' },
+  { key: 'shablonlar',      icon: '📑', label: 'Shablonlar' },
+  { key: 'counterparties',  icon: '🤝', label: 'Kontragentlar' },
+  { key: 'profile',         icon: '👤', label: 'Profil' },
 ]
 
 // ─── Main Component ───────────────────────────────────────
@@ -94,12 +107,26 @@ export default function DashboardPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [orgDropdown, setOrgDropdown] = useState(false)
 
+  const [specs, setSpecs] = useState<Specification[]>([])
+  const [specModal, setSpecModal] = useState(false)
+  const [editingSpec, setEditingSpec] = useState<Specification | null>(null)
+  const emptySpecForm = { contract_id: '', spec_number: '', items: [] as SpecItem[], notes: '' }
+  const [specForm, setSpecForm] = useState(emptySpecForm)
+
+  const [templateFilter, setTemplateFilter] = useState<string>('barchasi')
+  const [templatePreview, setTemplatePreview] = useState<AppTemplate | null>(null)
+  const [customTemplates, setCustomTemplates] = useState<AppTemplate[]>([])
+  const [customTemplateModal, setCustomTemplateModal] = useState(false)
+  const [editingCustomTemplate, setEditingCustomTemplate] = useState<AppTemplate | null>(null)
+  const emptyCustomTpl = { type: 'oldi_sotdi', name: '', description: '', content: '' }
+  const [customTplForm, setCustomTplForm] = useState(emptyCustomTpl)
+
   const [modal, setModal] = useState<null|'org'|'cp'|'contract'|'viewContract'|'bankAccount'|'upgrade'>(null)
   const [viewContract, setViewContract] = useState<Contract | null>(null)
   const [saving, setSaving] = useState(false)
 
   const emptyOrg = { name:'', inn:'', director_name:'', bank_name:'', bank_account:'', mfo:'', address:'' }
-  const emptyCp  = { name:'', inn:'', director_name:'', bank_name:'', bank_account:'', mfo:'', address:'' }
+  const emptyCp  = { name:'', inn:'', director_name:'', bank_name:'', bank_account:'', mfo:'', address:'', phone:'', qqsreg:'' }
   const emptyContract = {
     contract_number:'', contract_date: new Date().toISOString().split('T')[0],
     contract_type:'oldi_sotdi', amount:'', organization_id:'', counterparty_id:'',
@@ -176,6 +203,51 @@ export default function DashboardPage() {
     setContracts(data || [])
   }
 
+  async function loadSpecs(orgId: string) {
+    const { data } = await supabase.from('specifications')
+      .select('*, contracts(contract_number, contract_date, counterparties(name))')
+      .eq('organization_id', orgId)
+      .order('created_at', { ascending: false })
+    setSpecs(data || [])
+  }
+
+  async function loadCustomTemplates(orgId: string) {
+    const { data } = await supabase.from('custom_templates')
+      .select('*').eq('organization_id', orgId).order('created_at', { ascending: false })
+    setCustomTemplates((data || []).map((t: any) => ({
+      id: t.id, type: t.type, name: t.name,
+      description: t.description || '', content: t.content,
+      icon: '📄', isDefault: false, tags: [],
+    })))
+  }
+
+  async function saveCustomTemplate(e: React.FormEvent) {
+    e.preventDefault(); setSaving(true)
+    if (!activeOrg) return
+    if (!customTplForm.name.trim()) { alert("Shablon nomi kiriting!"); setSaving(false); return }
+    if (!customTplForm.content.trim()) { alert("Shablon matni kiriting!"); setSaving(false); return }
+    const payload = {
+      organization_id: activeOrg.id,
+      type: customTplForm.type,
+      name: customTplForm.name,
+      description: customTplForm.description,
+      content: customTplForm.content,
+    }
+    if (editingCustomTemplate) {
+      await supabase.from('custom_templates').update(payload).eq('id', editingCustomTemplate.id)
+    } else {
+      await supabase.from('custom_templates').insert(payload)
+    }
+    setSaving(false); setCustomTemplateModal(false); setEditingCustomTemplate(null); setCustomTplForm(emptyCustomTpl)
+    loadCustomTemplates(activeOrg.id)
+  }
+
+  async function deleteCustomTemplate(id: string) {
+    if (!confirm("Shablonni o'chirishni tasdiqlaysizmi?")) return
+    await supabase.from('custom_templates').delete().eq('id', id)
+    if (activeOrg) loadCustomTemplates(activeOrg.id)
+  }
+
   async function loadProfile(uid: string) {
     const { data } = await supabase.from('profiles').select('*').eq('id', uid).single()
     if (data) setProfile({
@@ -192,6 +264,8 @@ export default function DashboardPage() {
     if (activeOrg) {
       loadBankAccounts(activeOrg.id)
       loadSubscription(activeOrg.id)
+      loadSpecs(activeOrg.id)
+      loadCustomTemplates(activeOrg.id)
     }
   }, [activeOrg])
 
@@ -267,18 +341,231 @@ export default function DashboardPage() {
     setCpDetail(null); loadCps()
   }
 
+  // ── Auto spec number ──
+  function nextSpecNumber(contractId: string) {
+    const cnt = specs.filter(s => s.contract_id === contractId).length
+    const contract = contracts.find(c => c.id === contractId)
+    const base = contract ? contract.contract_number : '0'
+    return `${base}-SPEC-${cnt + 1}`
+  }
+
+  // ── Save spec ──
+  async function saveSpec(e: React.FormEvent) {
+    e.preventDefault(); setSaving(true)
+    if (!activeOrg) return
+    if (specForm.items.length === 0) { alert("Kamida 1 ta mahsulot/xizmat qo'shing!"); setSaving(false); return }
+    const payload = {
+      organization_id: activeOrg.id,
+      contract_id: specForm.contract_id || null,
+      spec_number: specForm.spec_number,
+      items: specForm.items,
+      notes: specForm.notes,
+    }
+    if (editingSpec) {
+      await supabase.from('specifications').update(payload).eq('id', editingSpec.id)
+    } else {
+      await supabase.from('specifications').insert(payload)
+    }
+    setSaving(false); setSpecModal(false); setEditingSpec(null); setSpecForm(emptySpecForm)
+    loadSpecs(activeOrg.id)
+  }
+
+  async function generateSpecPDF(spec: Specification) {
+    const { jsPDF } = await import('jspdf')
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+    const pageW = 210, pageH = 297, mL = 15, mR = 15, mT = 15
+    const cW = pageW - mL - mR
+    const safe = (s: string) => (s||'').replace(/[ʻʼ\u02BC\u2018\u2019]/g,"'").replace(/[\u201C\u201D\u00AB\u00BB]/g,'"').replace(/[\u2013\u2014]/g,'-')
+
+    // Manba ma'lumotlari
+    const org = activeOrg
+    const contract = spec.contracts
+    const orgName    = safe(org?.name || '—')
+    const orgDir     = safe(org?.director_name || '—')
+    const orgInn     = safe(org?.inn || '—')
+    const orgBank    = safe(org?.bank_name || '—')
+    const orgAccount = safe(org?.bank_account || '—')
+    const orgMfo     = safe(org?.mfo || '—')
+    const orgAddr    = safe(org?.address || '—')
+
+    // Kontragent ma'lumotlari — contractdan olamiz
+    let cpFull: Counterparty | null = null
+    if (spec.contract_id) {
+      const found = contracts.find(c => c.id === spec.contract_id)
+      if (found?.counterparty_id) {
+        cpFull = cps.find(cp => cp.id === found.counterparty_id) || null
+      }
+    }
+    const cpName    = safe(cpFull?.name || contract?.counterparties?.name || '—')
+    const cpDir     = safe(cpFull?.director_name || '—')
+    const cpInn     = safe(cpFull?.inn || '—')
+    const cpBank    = safe(cpFull?.bank_name || '—')
+    const cpAccount = safe(cpFull?.bank_account || '—')
+    const cpMfo     = safe(cpFull?.mfo || '—')
+    const cpAddr    = safe(cpFull?.address || '—')
+
+    const specDate = new Date(spec.created_at)
+    const dd = specDate.getDate(), mm = specDate.getMonth()+1, yy = specDate.getFullYear()
+    const dateStr = `${String(dd).padStart(2,'0')}.${String(mm).padStart(2,'0')}.${yy}`
+    const MONTHS = ['yanvar','fevral','mart','aprel','may','iyun','iyul','avgust','sentabr','oktabr','noyabr','dekabr']
+    const dateLong = `"${dd}" ${MONTHS[mm-1]} ${yy} y.`
+
+    let y = mT
+
+    // ── SARLAVHA ──
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(0,0,0)
+    doc.text(safe(`SPESIFIKATSIYA No${spec.spec_number}`), pageW/2, y, {align:'center'}); y += 7
+
+    if (contract) {
+      const cNum = contract.contract_number ? `No${contract.contract_number}` : ''
+      doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(60,60,60)
+      doc.text(safe(`Shartnoma ${cNum} ga ilova, sana: ${contract.contract_date}`), pageW/2, y, {align:'center'})
+      y += 7
+    }
+
+    // ── SANA + SHAHAR ──
+    doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(0,0,0)
+    doc.text(dateLong, pageW/2, y, {align:'center'}); y += 8
+
+    // ── KIRISH MATNI ──
+    const intro = safe(`${orgName} (keyingi o'rinlarda "Sotuvchi") va ${cpName} (keyingi o'rinlarda "Xaridor") o'rtasida ushbu Spesifikatsiya tuzildi:`)
+    const introLines = doc.splitTextToSize(intro, cW) as string[]
+    for (const l of introLines) { doc.text(l, mL, y); y += 5.5 }
+    y += 3
+
+    // ── JADVAL ──
+    // Ustunlar: №|Mahsulot nomi|Birlik|Soni|Narx|Stoimost|QQS%|QQS summa|Jami
+    // cW = 180mm, ustunlar yig'indisi = 180
+    const colW  = [7, 43, 13, 11, 22, 26, 10, 24, 24]
+    const colX: number[] = []
+    let cx = mL; colW.forEach(w => { colX.push(cx); cx += w })
+    const hdrs  = ['No','Nomi','Birlik','Soni','Narx','Narx jami','QQS%','QQS summa','Jami']
+    const rowH  = 7
+
+    // Header
+    const hdrH = 8
+    doc.setFillColor(220,225,235); doc.setDrawColor(100,100,100)
+    doc.rect(mL, y, cW, hdrH, 'FD')
+    colX.slice(1).forEach(x => doc.line(x, y, x, y+hdrH))
+    doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(0,0,0)
+    hdrs.forEach((h, i) => {
+      doc.text(h, colX[i] + colW[i]/2, y + 5.5, {align:'center'})
+    })
+    y += hdrH
+
+    // Items
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(0,0,0)
+    spec.items.forEach((it, idx) => {
+      if (y > pageH - 50) { doc.addPage(); y = mT }
+      const ql = it.qqs_foiz==='siz'?'0':it.qqs_foiz==='0'?'0':it.qqs_foiz
+      const asosiyRow = it.miqdori * it.narxi
+      const cells = [
+        String(idx+1),
+        safe(it.nomi),
+        safe(it.birlik),
+        String(it.miqdori),
+        it.narxi.toLocaleString(),
+        asosiyRow.toLocaleString(),
+        ql+'%',
+        it.qqs_summa > 0 ? it.qqs_summa.toLocaleString() : '—',
+        it.summa.toLocaleString()
+      ]
+      // Row height based on name length
+      const nameLines = doc.splitTextToSize(cells[1], colW[1]-2) as string[]
+      const rH = Math.max(rowH, nameLines.length * 4.5 + 3)
+      doc.setDrawColor(150,150,150)
+      doc.rect(mL, y, cW, rH, 'S')
+      colX.slice(1).forEach(x => doc.line(x, y, x, y+rH))
+      cells.forEach((cell, i) => {
+        if (i === 1) {
+          // Mahsulot nomi — wrap
+          const ls = doc.splitTextToSize(cell, colW[i]-2) as string[]
+          ls.forEach((l,li) => doc.text(l, colX[i]+1, y+4+li*4.5))
+        } else {
+          doc.text(cell, colX[i]+colW[i]/2, y+rH/2+1.5, {align:'center'})
+        }
+      })
+      y += rH
+    })
+
+    // ИТОГО qatori
+    const asosiy = spec.items.reduce((s,it)=>s+it.miqdori*it.narxi,0)
+    const qqsJ   = spec.items.reduce((s,it)=>s+(it.qqs_summa||0),0)
+    const grand  = spec.items.reduce((s,it)=>s+it.summa,0)
+    doc.setFillColor(245,245,245); doc.setDrawColor(100,100,100)
+    doc.rect(mL, y, cW, 7, 'FD')
+    colX.slice(1).forEach(x => doc.line(x, y, x, y+7))
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.5)
+    doc.text('Jami:', mL+3, y+5)
+    doc.text(asosiy.toLocaleString(), colX[5]+colW[5]/2, y+5, {align:'center'})
+    if (qqsJ>0) doc.text(qqsJ.toLocaleString(), colX[7]+colW[7]/2, y+5, {align:'center'})
+    doc.text(grand.toLocaleString(), colX[8]+colW[8]/2, y+5, {align:'center'})
+    y += 9
+
+    // To'lash jami + so'z bilan
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(0,0,0)
+    const grandWords = numberToWords(grand)
+    const grandText = safe(`Jami to'lov: ${grand.toLocaleString()} so'm (${grandWords})`)
+    const gLines = doc.splitTextToSize(grandText, cW) as string[]
+    for (const l of gLines) { doc.text(l, mL, y); y += 5 }
+    y += 5
+
+    // ── REKVIZITLAR ──
+    if (y > pageH - 60) { doc.addPage(); y = mT }
+    const half = cW/2
+    const xL = mL, xR = mL+half+5
+
+    // Sotuvchi
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(80,80,80)
+    doc.text('SOTUVCHI:', xL, y)
+    doc.text('XARIDOR:', xR, y); y += 5
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(0,0,0)
+    const orgNameLines = doc.splitTextToSize(orgName, half-10) as string[]
+    orgNameLines.forEach((l,i) => doc.text(l, xL, y+i*5))
+    const cpNameLines = doc.splitTextToSize(cpName, half-10) as string[]
+    cpNameLines.forEach((l,i) => doc.text(l, xR, y+i*5))
+    y += Math.max(orgNameLines.length, cpNameLines.length)*5 + 3
+
+    y = Math.max(y, y) + 5
+    // Imzo chiziqlari
+    doc.setDrawColor(0,0,0)
+    doc.line(xL, y, xL+55, y)
+    doc.line(xR, y, xR+55, y)
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(80,80,80)
+    doc.text(`Rahbar: _____________ / ${orgDir}`, xL, y+5)
+    doc.text(`Rahbar: _____________ / ${cpDir}`, xR, y+5)
+    doc.text('M.O.', xL+20, y+11); doc.text('M.O.', xR+20, y+11)
+
+    // Footer
+    const n = doc.getNumberOfPages()
+    for (let p=1; p<=n; p++) {
+      doc.setPage(p); doc.setFontSize(8); doc.setTextColor(170,170,170)
+      doc.text('Shartnoma.uz — Online shartnoma generatori', pageW/2, pageH-5, {align:'center'})
+      doc.text(`${p} / ${n}`, pageW-mR, pageH-5, {align:'right'})
+    }
+
+    doc.save(`spec-${spec.spec_number}.pdf`)
+  }
+
+  async function deleteSpec(id: string) {
+    if (!confirm("Spesifikatsiyani o'chirishni tasdiqlaysizmi?")) return
+    await supabase.from('specifications').delete().eq('id', id)
+    if (activeOrg) loadSpecs(activeOrg.id)
+  }
+
   async function saveContract(e: React.FormEvent) {
     e.preventDefault()
     if (!canCreateContract()) { setModal('upgrade'); return }
+    if (!contractForm.organization_id) { alert("Tashkilotni tanlang!"); return }
     setSaving(true)
     const { data: { session } } = await supabase.auth.getSession()
-    await supabase.from('contracts').insert({
+    const { error } = await supabase.from('contracts').insert({
       contract_number: contractForm.contract_number,
       contract_date: contractForm.contract_date,
       contract_type: contractForm.contract_type,
       amount: parseFloat(contractForm.amount)||0,
-      organization_id: contractForm.organization_id,
-      counterparty_id: contractForm.counterparty_id,
+      organization_id: contractForm.organization_id || null,
+      counterparty_id: contractForm.counterparty_id || null,
       status: contractForm.status,
       content: contractForm.content,
       city: contractForm.city,
@@ -288,6 +575,11 @@ export default function DashboardPage() {
       qqs_rate: contractForm.qqs_rate || 12,
       user_id: session!.user.id
     })
+    if (error) {
+      alert('Xato: ' + error.message)
+      setSaving(false)
+      return
+    }
     if (subscription) {
       await supabase.from('subscriptions').update({ contracts_used: subscription.contracts_used + 1 }).eq('id', subscription.id)
     }
@@ -393,224 +685,382 @@ export default function DashboardPage() {
   async function generatePDF(c: Contract) {
     const { jsPDF } = await import('jspdf')
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-    const margin = 20
-    const pageW = 210
-    const pageH = 297
-    const contentW = pageW - margin * 2
-    const content = c.content || ''
+    const mL = 20, mR = 20, mT = 20, mB = 20
+    const pageW = 210, pageH = 297
+    const cW = pageW - mL - mR
 
-    // Org rasm URL larini olish (contracts join qilmagan, shuning uchun orgs listidan izlaymiz)
     const orgData = orgs.find(o => o.id === c.organization_id)
+    const org = c.organizations || orgData
+    const cp = c.counterparties
     const [stampB64, signB64] = await Promise.all([
       orgData?.stamp_url ? loadImageAsBase64(orgData.stamp_url) : Promise.resolve(null),
       orgData?.signature_url ? loadImageAsBase64(orgData.signature_url) : Promise.resolve(null),
     ])
 
-    // ─── Spesifikatsiya jadvali yordamchi funksiya ───
-    function drawSpecTable(startY: number): number {
+    const MONTHS = ['yanvar','fevral','mart','aprel','may','iyun','iyul','avgust','sentabr','oktabr','noyabr','dekabr']
+    // jsPDF helvetica faqat Latin-1 qo'llab-quvvatlaydi — maxsus belgilarni almashtirish
+    const safe = (s: string): string => (s || '')
+      .replace(/[ʻʼ\u02BC\u2018\u2019]/g, "'")
+      .replace(/[\u201C\u201D\u00AB\u00BB]/g, '"')
+      .replace(/[\u2013\u2014]/g, '-')
+      .replace(/O\u2018/g, "O'").replace(/G\u2018/g, "G'")
+      .replace(/o\u2018/g, "o'").replace(/g\u2018/g, "g'")
+
+    const fmtDate = (d: string) => {
+      const [yy,mm,dd] = d.split('-')
+      return `"${parseInt(dd)}" ${MONTHS[parseInt(mm)-1]} ${yy} y.`
+    }
+    const ctName = safe(CONTRACT_TYPE_NAMES[c.contract_type as keyof typeof CONTRACT_TYPE_NAMES] || c.contract_type)
+
+    const addPageNums = () => {
+      const n = doc.getNumberOfPages()
+      for (let p = 1; p <= n; p++) {
+        doc.setPage(p)
+        doc.setFontSize(8); doc.setTextColor(170,170,170)
+        doc.text('Shartnoma.uz — Online shartnoma generatori', pageW/2, pageH-6, {align:'center'})
+        doc.text(`${p} / ${n}`, pageW-mR, pageH-6, {align:'right'})
+      }
+    }
+
+    // Spec table (inline)
+    const drawSpecTable = (startY: number): number => {
       const items = c.spec_items || []
       if (!items.length) return startY
       let y = startY + 6
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(10)
-      doc.setTextColor(20, 20, 20)
-      doc.text('SPESIFIKATSIYA (1-ILOVA)', margin, y)
-      y += 6
-      // Ustunlar: № | Nomi | Birlik | Soni | Narx | QQS% | QQS miqdori | Jami
-      const cols  = [7, 58, 16, 14, 22, 14, 22, 22]
-      const headers = ['№', 'Mahsulot/xizmat nomi', 'Birlik', 'Soni', 'Narx', 'QQS%', 'QQS miqdori', 'Jami']
+      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(0,0,0)
+      doc.text('SPESIFIKATSIYA (1-ILOVA)', pageW/2, y, {align:'center'}); y += 7
+      const cols = [7,58,16,14,22,14,22,17]
+      const hdrs = ['№','Mahsulot/xizmat nomi','Birlik','Soni','Narx','QQS%','QQS summa','Jami']
       const anyQqs = items.some((it: SpecItem) => it.qqs_foiz && it.qqs_foiz !== 'siz')
-      doc.setFillColor(240, 242, 245)
-      doc.rect(margin, y - 4, contentW, 7, 'F')
-      doc.setDrawColor(200, 200, 200)
-      doc.rect(margin, y - 4, contentW, 7, 'S')
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(7.5)
-      doc.setTextColor(60, 60, 60)
-      let cx = margin + 1
-      headers.forEach((h, i) => { doc.text(h, cx, y); cx += cols[i] })
-      y += 5
-      // Qatorlar
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(8)
-      doc.setTextColor(20, 20, 20)
+      doc.setFillColor(235,238,245); doc.rect(mL,y-4,cW,7,'F')
+      doc.setDrawColor(180,180,180); doc.rect(mL,y-4,cW,7,'S')
+      doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(50,50,50)
+      let cx = mL+1; hdrs.forEach((h,i)=>{ doc.text(h,cx,y); cx+=cols[i] }); y+=5
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(20,20,20)
       items.forEach((item: SpecItem, idx: number) => {
-        if (y > pageH - 30) { doc.addPage(); y = margin + 10 }
-        doc.setDrawColor(220, 220, 220)
-        doc.line(margin, y + 2, margin + contentW, y + 2)
-        cx = margin + 1
-        const qqsLabel = item.qqs_foiz === 'siz' ? 'QQSsiz' : (item.qqs_foiz ? item.qqs_foiz + '%' : '—')
-        const row = [
-          String(idx + 1),
-          item.nomi,
-          item.birlik,
-          String(item.miqdori),
-          item.narxi.toLocaleString(),
-          qqsLabel,
-          item.qqs_summa > 0 ? item.qqs_summa.toLocaleString() : '—',
-          item.summa.toLocaleString()
-        ]
-        row.forEach((cell, i) => {
-          const maxW = cols[i] - 1
-          const truncated = doc.splitTextToSize(cell, maxW)[0] as string
-          doc.text(truncated, cx, y); cx += cols[i]
-        })
-        y += 5
+        if (y > pageH-30) { doc.addPage(); y = mT+10 }
+        doc.setDrawColor(215,215,215); doc.line(mL,y+2,mL+cW,y+2); cx=mL+1
+        const ql = item.qqs_foiz==='siz'?'QQSsiz':(item.qqs_foiz?item.qqs_foiz+'%':'—')
+        const row=[String(idx+1),item.nomi,item.birlik,String(item.miqdori),item.narxi.toLocaleString(),ql,item.qqs_summa>0?item.qqs_summa.toLocaleString():'—',item.summa.toLocaleString()]
+        row.forEach((cell,i)=>{ doc.text(doc.splitTextToSize(cell,cols[i]-1)[0] as string,cx,y); cx+=cols[i] }); y+=5
       })
-      // Jami qatorlar
-      const asosiy = items.reduce((s: number, it: SpecItem) => s + it.miqdori * it.narxi, 0)
-      const qqsJami = items.reduce((s: number, it: SpecItem) => s + (it.qqs_summa || 0), 0)
-      const grand = asosiy + qqsJami
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(8)
-      doc.setFillColor(245, 245, 245)
+      const asosiy=items.reduce((s:number,it:SpecItem)=>s+it.miqdori*it.narxi,0)
+      const qqsJ=items.reduce((s:number,it:SpecItem)=>s+(it.qqs_summa||0),0)
+      const grand=asosiy+qqsJ
+      doc.setFont('helvetica','bold'); doc.setFillColor(245,245,245)
       if (anyQqs) {
-        doc.rect(margin, y - 3, contentW, 18, 'F')
-        doc.setTextColor(80, 80, 80)
-        doc.text(`Soliqsiz jami: ${asosiy.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
-        doc.text(`QQS jami: ${qqsJami.toLocaleString()} so'm`, margin + contentW - 2, y + 6, { align: 'right' })
-        doc.setTextColor(20, 20, 20)
-        doc.text(`QQS bilan jami: ${grand.toLocaleString()} so'm`, margin + contentW - 2, y + 12, { align: 'right' })
-        y += 18
+        doc.rect(mL,y-3,cW,18,'F')
+        doc.setTextColor(80,80,80)
+        doc.text(`Soliqsiz jami: ${asosiy.toLocaleString()} so'm`,mL+cW-2,y+1,{align:'right'})
+        doc.text(`QQS jami: ${qqsJ.toLocaleString()} so'm`,mL+cW-2,y+6,{align:'right'})
+        doc.setTextColor(0,0,0); doc.text(`QQS bilan jami: ${grand.toLocaleString()} so'm`,mL+cW-2,y+12,{align:'right'}); y+=18
       } else {
-        doc.rect(margin, y - 3, contentW, 6, 'F')
-        doc.setTextColor(20, 20, 20)
-        doc.text(`Jami: ${grand.toLocaleString()} so'm`, margin + contentW - 2, y + 1, { align: 'right' })
-        y += 8
+        doc.rect(mL,y-3,cW,6,'F'); doc.setTextColor(0,0,0)
+        doc.text(`Jami: ${grand.toLocaleString()} so'm`,mL+cW-2,y+1,{align:'right'}); y+=8
       }
       return y
     }
 
-    // ─── Imzo va muhr bloki ───
-    async function drawSignatures(y: number) {
-      // Yetarli joy bormi?
-      if (y > pageH - 55) { doc.addPage(); y = margin }
-      y += 8
-      doc.setDrawColor(200, 200, 200)
-      doc.line(margin, y, margin + contentW, y)
-      y += 8
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(9)
-      doc.setTextColor(30, 30, 30)
-      doc.text('BUYURTMACHI:', margin, y)
-      doc.text('IJROCHI:', margin + 95, y)
-      y += 5
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(8)
-      doc.setTextColor(80, 80, 80)
-      if (c.organizations) {
-        const o = c.organizations
-        doc.text(o.name || '', margin, y)
-        doc.text(`INN: ${o.inn || '—'}`, margin, y + 5)
-        doc.text(`Rahbar: ${o.director_name || '—'}`, margin, y + 10)
-      }
-      if (c.counterparties) {
-        const cp = c.counterparties
-        doc.text(cp.name || '', margin + 95, y)
-        doc.text(`INN: ${cp.inn || '—'}`, margin + 95, y + 5)
-        doc.text(`Rahbar: ${cp.director_name || '—'}`, margin + 95, y + 10)
-      }
-      y += 18
-      // Imzo chiziqlari
-      doc.setDrawColor(150, 150, 150)
-      doc.line(margin, y, margin + 60, y)
-      doc.line(margin + 95, y, margin + 155, y)
-      doc.setFontSize(7)
-      doc.setTextColor(150, 150, 150)
-      doc.text('Imzo', margin + 30, y + 4, { align: 'center' })
-      doc.text('Imzo', margin + 125, y + 4, { align: 'center' })
-      y += 12
-      // Muhr va imzo rasmlari
-      try {
-        if (signB64) {
-          doc.addImage(signB64, 'PNG', margin, y - 22, 30, 15)
-        }
-        if (stampB64) {
-          doc.addImage(stampB64, 'PNG', margin + 5, y - 18, 25, 25)
-        }
-      } catch { /* rasm yuklanmadi */ }
-      // Footer
-      doc.setFontSize(7)
-      doc.setTextColor(180, 180, 180)
-      const totalPages = doc.getNumberOfPages()
-      for (let p = 1; p <= totalPages; p++) {
-        doc.setPage(p)
-        doc.text('Shartnoma.uz — Online shartnoma generatori', pageW / 2, pageH - 6, { align: 'center' })
-        doc.text(`${p} / ${totalPages}`, pageW - margin, pageH - 6, { align: 'right' })
-      }
-    }
+    // ══════════════════════════════════════════════════════
+    // ── XALQARO: ikki ustunli ikki tilli PDF ──
+    // ══════════════════════════════════════════════════════
+    if (c.contract_type === 'xalqaro') {
+      const gap  = 5
+      const hW   = (cW - gap) / 2
+      const xL   = mL
+      const xR   = mL + hW + gap
+      const lH   = 4.5
+      let   y    = mT
 
-    if (content) {
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(10)
-      doc.setTextColor(20, 20, 20)
-      const lines = doc.splitTextToSize(content, contentW)
-      let y = margin
-      const lineHeight = 5.5
-      for (let i = 0; i < lines.length; i++) {
-        if (y + lineHeight > pageH - margin) { doc.addPage(); y = margin }
-        const line = lines[i] as string
-        if (
-          line.match(/^\d+\.\s[A-Z]/) ||
-          line.match(/^[A-ZА-ЯЎҚҒҲ\s]{6,}$/) ||
-          line.includes('SHARTNOMA') || line.includes('REKVIZIT')
-        ) {
-          doc.setFont('helvetica', 'bold'); doc.setFontSize(10)
-        } else {
-          doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5)
-        }
-        doc.text(line, margin, y)
-        y += lineHeight
+      const drawDivider = () => {
+        doc.setDrawColor(200,200,200)
+        doc.line(mL + hW + gap/2, mT - 2, mL + hW + gap/2, pageH - mB)
       }
-      // Spesifikatsiya
-      if ((c.spec_items || []).length > 0) {
-        if (y > pageH - 60) { doc.addPage(); y = margin }
+      drawDivider()
+
+      const biRow = (uzTxt: string, enTxt: string, bold = false, size = 8.5, after = 2): void => {
+        doc.setFont('helvetica', bold ? 'bold' : 'normal'); doc.setFontSize(size); doc.setTextColor(0,0,0)
+        const uzW = doc.splitTextToSize(safe(uzTxt), hW - 2) as string[]
+        const enW = doc.splitTextToSize(enTxt,       hW - 2) as string[]
+        const need = Math.max(uzW.length, enW.length) * lH + after
+        if (y + need > pageH - mB - 8) { doc.addPage(); y = mT; drawDivider() }
+        uzW.forEach((l, i) => doc.text(l, xL, y + i * lH))
+        enW.forEach((l, i) => doc.text(l, xR, y + i * lH))
+        y += Math.max(uzW.length, enW.length) * lH + after
+      }
+      const biTitle = (uz: string, en: string) => biRow(uz, en, true, 9, 5)
+
+      const orgN = safe(org?.name || '___'), cpN  = safe(cp?.name  || '___')
+      const orgD = safe(org?.director_name || '___'), cpD  = safe(cp?.director_name  || '___')
+      const orgI = safe(org?.inn || '___'), cpI  = safe(cp?.inn  || '___')
+      const sumN = (c.amount||0).toLocaleString()
+      const sumW = safe(numberToWords(c.amount||0))
+      const city = safe(c.city || 'Toshkent')
+
+      // ── Sarlavha ──
+      doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(0,0,0)
+      doc.text(safe(`XALQARO SAVDO SHARTNOMASI No${c.contract_number}`), xL+hW/2, y, {align:'center'})
+      doc.text(`INTERNATIONAL TRADE CONTRACT No${c.contract_number}`,    xR+hW/2, y, {align:'center'})
+      y += 7
+      doc.setFont('helvetica','normal'); doc.setFontSize(9)
+      doc.text(`${city} shahri`, xL, y); doc.text(safe(fmtDate(c.contract_date)), xL+hW, y, {align:'right'})
+      doc.text(city,             xR, y); doc.text(safe(fmtDate(c.contract_date)), xR+hW, y, {align:'right'})
+      y += 9
+
+      // ── Tomonlar taqdimoti ──
+      biRow(
+        `"${orgN}", keyingi o'rinlarda "Sotuvchi" deb yuritiladi, ${orgD} nomidan, bir tomondan, va "${cpN}", keyingi o'rinlarda "Xaridor" deb yuritiladi, ${cpD} nomidan, ikkinchi tomondan, quyidagilarni kelishib oldilar:`,
+        `"${orgN}", hereinafter referred to as the "Seller", represented by ${orgD}, on the one hand, and "${cpN}", hereinafter referred to as the "Buyer", represented by ${cpD}, on the other hand, have agreed as follows:`,
+        false, 8.5, 7)
+
+      // ── 1. Shartnoma predmeti ──
+      biTitle("1. SHARTNOMA PREDMETI", "1. SUBJECT OF THE CONTRACT")
+      biRow("1.1. Sotuvchi Xaridorga tovarlarni sotish va yetkazib berish, Xaridor esa ushbu tovarlarni qabul qilib to'lash majburiyatini oladi.", "1.1. The Seller agrees to sell and deliver, and the Buyer agrees to accept and pay for the goods in accordance with the terms of this Contract.")
+      biRow("1.2. Tovarlar tavsifi, miqdori va narxi ushbu shartnomaga ilova qilinadigan Spesifikatsiyada (1-ilova) belgilanadi.", "1.2. Goods description, quantity and price are specified in Annex No.1 (Specification), which is an integral part of this Contract.")
+      biRow("1.3. Tovarlar sifati kelishilgan xalqaro standartlar va texnik shartlarga mos bo'lishi kerak.", "1.3. The goods shall comply with the agreed international quality standards and technical specifications.", false, 8.5, 6)
+
+      // ── 2. Summa ──
+      biTitle("2. SHARTNOMA SUMMASI", "2. CONTRACT VALUE")
+      biRow(`2.1. Shartnoma bo'yicha tovarlarning umumiy qiymati ${sumN} (${sumW}) so'mni tashkil etadi.`, `2.1. The total value of this Contract is ${sumN} (${sumW}) UZS.`)
+      biRow("2.2. Narxlar tomonlarning yozma kelishuvigacha o'zgartirilmaydi.", "2.2. Unit prices are fixed and shall not be amended without mutual written consent.")
+      biRow("2.3. Sotuvchi mamlakatidagi bank xarajatlarini Sotuvchi, Xaridor mamlakatidagi xarajatlarni Xaridor to'laydi.", "2.3. Bank charges in the Seller's country are borne by the Seller; charges in the Buyer's country by the Buyer.", false, 8.5, 6)
+
+      // ── 3. Yetkazib berish ──
+      biTitle("3. YETKAZIB BERISH SHARTLARI", "3. DELIVERY TERMS")
+      biRow("3.1. Yetkazib berish shartlari: _____________ (Incoterms 2020).", "3.1. Delivery terms: _____________ (Incoterms 2020).")
+      biRow("3.2. Yetkazib berish joyi: _______________________", "3.2. Place of delivery: _______________________")
+      biRow("3.3. Yetkazib berish muddati: shartnoma imzolanganidan / avans to'lovidan keyin _______ kun ichida.", "3.3. Delivery period: within _______ days from signing / receipt of advance payment.")
+      biRow("3.4. Qisman yetkazib berish: [ ] Ruxsat etiladi  [ ] Ruxsat etilmaydi.", "3.4. Partial shipments: [ ] Allowed  [ ] Not allowed.", false, 8.5, 6)
+
+      // ── 4. To'lov ──
+      biTitle("4. TO'LOV SHARTLARI", "4. PAYMENT TERMS")
+      biRow("4.1. To'lov usuli: [ ] Bank o'tkazma (T/T)  [ ] Akkreditiv (L/C)  [ ] Ochiq hisob.", "4.1. Payment method: [ ] Bank Transfer (T/T)  [ ] Letter of Credit (L/C)  [ ] Open Account.")
+      biRow("4.2. To'lov valyutasi: USD / EUR / UZS (tomonlar kelishuviga ko'ra).", "4.2. Payment currency: USD / EUR / UZS (as agreed by the parties).")
+      biRow("4.3. To'lov jadvali: shartnoma imzolanganida ___% avans _____ bank ish kuni ichida; qolgan qism yetkazib berish hujjatlari taqdim etilganidan keyin _____ bank ish kuni ichida.", "4.3. Payment schedule: ___% advance within _____ banking days from signing; balance within _____ banking days after shipping documents received.", false, 8.5, 6)
+
+      // ── 5. Hujjatlar ──
+      biTitle("5. YETKAZIB BERISH HUJJATLARI", "5. SHIPPING DOCUMENTS")
+      biRow("5.1. Sotuvchi quyidagi hujjatlarni taqdim etadi: tijorat fakturasi; qadoqlash ro'yxati; konosament / CMR / havo yuk xati; kelib chiqish sertifikati; sifat sertifikati; boshqa kelishilgan hujjatlar.", "5.1. Seller shall provide: Commercial Invoice; Packing List; Bill of Lading / CMR / Airway Bill; Certificate of Origin; Quality Certificate; other documents as agreed.", false, 8.5, 6)
+
+      // ── 6. Sifat ──
+      biTitle("6. SIFAT VA TEKSHIRUV", "6. QUALITY AND INSPECTION")
+      biRow("6.1. Tovarlar kelishilgan spesifikatsiya va sertifikatlarga mos bo'lishi kerak.", "6.1. The goods shall comply with the agreed specifications and certificates.")
+      biRow("6.2. Yuklash portida tekshiruv: Sotuvchi hisobidan (tekshiruv sertifikati taqdim etiladi).", "6.2. Inspection at loading port: Seller's responsibility (inspection certificate to be provided).")
+      biRow("6.3. Sifat va miqdor bo'yicha da'volar: yetkazib berilganidan keyin 30 kun ichida.", "6.3. Claims for quality and quantity: within 30 days after delivery.", false, 8.5, 6)
+
+      // ── 7. Fors-major ──
+      biTitle("7. FORS-MAJOR", "7. FORCE MAJEURE")
+      biRow("7.1. Tabiiy ofat, urush, sanktsiyalar, hukumat taqiqlari, pandemiyadek fors-major holatlarda tomonlar javobgar emas.", "7.1. Neither party shall be liable for failure to perform due to force majeure (natural disasters, war, sanctions, government prohibitions, pandemic, etc.).")
+      biRow("7.2. Ta'sirlangan tomon 7 kun ichida yozma xabar berishi va vakolatli organ sertifikatini taqdim etishi shart.", "7.2. The affected party must notify the other in writing within 7 days and provide a certificate from the competent authority.")
+      biRow("7.3. Fors-major 60 kundan ko'proq davom etsa, tomonlardan biri jarimasisiz shartnomani bekor qilishi mumkin.", "7.3. If force majeure continues for more than 60 days, either party may terminate without penalty.", false, 8.5, 6)
+
+      // ── 8. Nizolar ──
+      biTitle("8. NIZOLARNI HAL ETISH", "8. DISPUTE RESOLUTION")
+      biRow("8.1. Barcha nizolar avval 30 kun ichida muzokaralar orqali hal etiladi.", "8.1. All disputes shall first be resolved through negotiations within 30 days.")
+      biRow("8.2. Hal bo'lmasa: [ ] ICC arbitraji (Parij)  [ ] UNCITRAL arbitraji  [ ] O'zbekiston Respublikasi Iqtisodiy sudi.", "8.2. If unresolved: [ ] ICC Arbitration (Paris)  [ ] UNCITRAL Arbitration  [ ] Courts of Uzbekistan.")
+      biRow("8.3. Tatbiq etiladigan qonunchilik: O'zbekiston Respublikasi qonunchiligi / CISG (BMT Konventsiyasi).", "8.3. Governing law: Law of the Republic of Uzbekistan / CISG (UN Convention on Contracts for International Sale of Goods).", false, 8.5, 6)
+
+      // ── 9. Muddati ──
+      biTitle("9. AMAL QILISH MUDDATI", "9. VALIDITY")
+      biRow("9.1. Shartnoma imzolangan kundan kuchga kiradi va majburiyatlar to'liq bajarilgunga qadar amal qiladi.", "9.1. This Contract enters into force upon signing and remains valid until obligations are fully performed.")
+      biRow("9.2. Tomonlardan biri shartnomani 30 kun oldin yozma ogohlantirish bilan bekor qilishi mumkin.", "9.2. Either party may terminate by giving 30 days written notice.", false, 8.5, 8)
+
+      // ── Spesifikatsiya ──
+      if ((c.spec_items||[]).length > 0) {
+        if (y > pageH - 60) { doc.addPage(); y = mT; drawDivider() }
         y = drawSpecTable(y + 5)
       }
-      await drawSignatures(y)
-    } else {
-      // Matn yo'q — asosiy info
-      const t = (text: string, x: number, y: number, size = 11) => {
-        doc.setFontSize(size); doc.text(String(text || ''), x, y)
+
+      // ── Rekvizitlar ──
+      if (y > pageH - mB - 70) { doc.addPage(); y = mT; drawDivider() }
+      y += 4
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(0,0,0)
+      doc.text("10. TOMONLARNING REKVIZITLARI / PARTIES' DETAILS", pageW/2, y, {align:'center'})
+      y += 7
+      const rW = cW / 2
+      const rRows: {label:string; left:string; right:string; bold?:boolean}[] = [
+        { label:'Nomi / Name:',        left: orgN, right: cpN, bold: true },
+        { label:'INN / TIN:',          left: orgI, right: cpI },
+        { label:'Rahbar / Director:',  left: orgD, right: cpD, bold: true },
+        { label:'Manzil / Address:',   left: safe(org?.address||'-'),      right: safe(cp?.address||'-') },
+        { label:'Bank:',               left: safe(org?.bank_name||'-'),    right: safe(cp?.bank_name||'-') },
+        { label:'H/r / Account:',      left: safe(org?.bank_account||'-'), right: safe(cp?.bank_account||'-') },
+        { label:'MFO:',                left: safe(org?.mfo||'-'),          right: safe(cp?.mfo||'-') },
+      ]
+      doc.setFillColor(235,238,245); doc.setDrawColor(170,170,170)
+      doc.rect(mL,y,rW,7,'FD'); doc.rect(mL+rW,y,rW,7,'FD'); doc.line(mL+rW,y,mL+rW,y+7)
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5)
+      doc.text('SOTUVCHI / SELLER', mL+rW/2,    y+4.5, {align:'center'})
+      doc.text('XARIDOR / BUYER',   mL+rW+rW/2, y+4.5, {align:'center'})
+      y += 7
+      for (const row of rRows) {
+        const rH = 8
+        doc.setDrawColor(190,190,190); doc.rect(mL,y,rW,rH); doc.rect(mL+rW,y,rW,rH)
+        doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(130,130,130)
+        doc.text(row.label, mL+2, y+3); doc.text(row.label, mL+rW+2, y+3)
+        doc.setFontSize(row.bold ? 8.5 : 8); doc.setFont('helvetica', row.bold ? 'bold' : 'normal'); doc.setTextColor(0,0,0)
+        doc.text(doc.splitTextToSize(row.left,  rW-18)[0] as string, mL+18,    y+6.5)
+        doc.text(doc.splitTextToSize(row.right, rW-18)[0] as string, mL+rW+18, y+6.5)
+        y += rH
       }
-      doc.setFillColor(30, 41, 59); doc.rect(0, 0, 210, 40, 'F')
-      doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold')
-      t('SHARTNOMA', 105, 16, 20)
-      doc.setFont('helvetica', 'normal')
-      t(`№ ${c.contract_number}  |  ${c.contract_date}  |  ${c.city || 'Toshkent'}`, 105, 27, 10)
-      doc.setTextColor(0, 0, 0); doc.setDrawColor(200, 200, 200)
-      doc.rect(10, 48, 90, 65); doc.rect(110, 48, 90, 65)
-      doc.setFontSize(8); doc.setTextColor(100, 100, 100)
-      doc.text('BUYURTMACHI', 55, 54, { align: 'center' })
-      doc.text('IJROCHI', 155, 54, { align: 'center' })
-      doc.setTextColor(0, 0, 0)
-      if (c.organizations) {
-        const o = c.organizations
-        t(o.name, 13, 62, 9); t(`INN: ${o.inn || '—'}`, 13, 70, 8)
-        t(`Rahbar: ${o.director_name || '—'}`, 13, 78, 8)
-        t(`Bank: ${o.bank_name || '—'}`, 13, 86, 8)
-        t(`H/r: ${o.bank_account || '—'}`, 13, 94, 8)
-        t(`MFO: ${o.mfo || '—'}`, 13, 102, 8)
+      y += 6
+      if (y > pageH - mB - 30) { doc.addPage(); y = mT; drawDivider() }
+      const sigW2 = rW - 10
+      doc.setDrawColor(80,80,80)
+      doc.line(mL, y, mL+sigW2, y); doc.line(mL+rW+5, y, mL+rW+5+sigW2, y)
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,60,60)
+      doc.text(`/ ${orgD}`, mL+sigW2+1,        y)
+      doc.text(`/ ${cpD}`,  mL+rW+5+sigW2+1,  y)
+      y += 5; doc.setTextColor(120,120,120)
+      doc.text('M.O. / SEAL', mL+10, y); doc.text('M.O. / SEAL', mL+rW+15, y)
+      try {
+        if (signB64) doc.addImage(signB64,'PNG', mL,   y-15, 30, 15)
+        if (stampB64) doc.addImage(stampB64,'PNG', mL+5, y-10, 25, 25)
+      } catch { /* rasm yuklanmadi */ }
+
+      addPageNums()
+      doc.save(`shartnoma-${c.contract_number.replace(/\//g,'-')}.pdf`)
+      return
+    }
+    // ══════════════════════════════════════════════════════
+
+    // ── 1. SARLAVHA ──
+    let y = mT
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(0,0,0)
+    doc.text(safe(`${ctName.toUpperCase()} No${c.contract_number}`), pageW/2, y, {align:'center'})
+    y += 9
+
+    // ── 2. SHAHAR + SANA ──
+    doc.setFont('helvetica','normal'); doc.setFontSize(10)
+    doc.text(safe(`${c.city || 'Toshkent'} shahri`), mL, y)
+    doc.text(safe(fmtDate(c.contract_date)), pageW-mR, y, {align:'right'})
+    y += 10
+
+    // ── 3. TOMONLAR KIRISH MATNI ──
+    const orgName = safe(org?.name || '___')
+    const cpName  = safe(cp?.name  || '___')
+    const orgDir  = safe(org?.director_name || '___')
+    const cpDir   = safe(cp?.director_name  || '___')
+    const intro = safe(`"${orgName}", keyingi o'rinlarda "Sotuvchi" sifatida, Direktor ${orgDir} vakilligi asosida bir tomondan va "${cpName}", keyingi o'rinlarda "Xaridor" sifatida, Direktor ${cpDir} vakilligi asosida ikkinchi tomondan ushbu shartnomani tuzdilar:`)
+    doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(0,0,0)
+    const introLines = doc.splitTextToSize(intro, cW) as string[]
+    for (const line of introLines) {
+      if (y > pageH-mB-20) { doc.addPage(); y = mT }
+      doc.text(line, mL, y); y += 5.5
+    }
+    y += 5
+
+    // ── 4. ASOSIY MATN ──
+    const content = c.content || ''
+    if (content) {
+      // Contentdan eski sarlavha va rekvizitlar qismini olib tashlaymiz
+      const allLines = content.split('\n')
+      // Birinchi "1." bilan boshlanadigan qatorgacha skip
+      const firstNumIdx = allLines.findIndex(l => /^1\.\s/.test(l.trim()))
+      // "TOMONLARNING REKVIZIT" dan keyingi qatorlarni skip
+      const rekvIdx = allLines.findIndex(l => /TOMONLARNING REKVIZIT|^BUYURTMACHI:|^IJROCHI:/.test(l.trim()))
+      const start = firstNumIdx >= 0 ? firstNumIdx : 0
+      const end   = rekvIdx    >= 0 ? rekvIdx    : allLines.length
+      const bodyLines = allLines.slice(start, end)
+
+      for (const rawLine of bodyLines) {
+        const trimmed = safe(rawLine.trim())
+        if (!trimmed) { y += 2.5; continue }
+        const isBoldHead = /^[1-9]\d*\.\s+[A-Z]/.test(trimmed) && !/^\d+\.\d+/.test(trimmed)
+        const isAllCaps  = /^[A-Z\s'\-]{7,}$/.test(trimmed)
+        if (y > pageH-mB-12) { doc.addPage(); y = mT }
+        if (isBoldHead || isAllCaps) {
+          y += 2
+          doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(0,0,0)
+          doc.text(trimmed, pageW/2, y, {align:'center'})
+          y += 7
+        } else {
+          const isSubItem = /^\d+\.\d+/.test(trimmed)
+          const indent = isSubItem ? mL+5 : mL
+          const ww = cW - (isSubItem ? 5 : 0)
+          doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(0,0,0)
+          const wrapped = doc.splitTextToSize(trimmed, ww) as string[]
+          for (const wl of wrapped) {
+            if (y > pageH-mB-12) { doc.addPage(); y = mT }
+            doc.text(wl as string, indent, y); y += 5.5
+          }
+        }
       }
-      if (c.counterparties) {
-        const cp = c.counterparties
-        t(cp.name, 113, 62, 9); t(`INN: ${cp.inn || '—'}`, 113, 70, 8)
-        t(`Rahbar: ${cp.director_name || '—'}`, 113, 78, 8)
-        t(`Bank: ${cp.bank_name || '—'}`, 113, 86, 8)
-        t(`H/r: ${cp.bank_account || '—'}`, 113, 94, 8)
-        t(`MFO: ${cp.mfo || '—'}`, 113, 102, 8)
-      }
-      doc.line(10, 122, 200, 122)
-      t(`Tur: ${CONTRACT_TYPE_NAMES[c.contract_type as keyof typeof CONTRACT_TYPE_NAMES] || c.contract_type}`, 10, 132, 9)
-      let infoY = 140
-      if (c.product_name) { t(`Mahsulot/xizmat: ${c.product_name}`, 10, infoY, 9); infoY += 8 }
-      t(`Summa: ${c.amount?.toLocaleString()} so'm`, 10, infoY, 9)
-      let nextY = infoY + 12
-      if ((c.spec_items || []).length > 0) nextY = drawSpecTable(nextY)
-      await drawSignatures(nextY)
     }
 
-    doc.save(`shartnoma-${c.contract_number.replace(/\//g, '-')}.pdf`)
+    // ── 5. SPESIFIKATSIYA ──
+    if ((c.spec_items||[]).length > 0) {
+      if (y > pageH-60) { doc.addPage(); y = mT }
+      y = drawSpecTable(y + 5)
+    }
+
+    // ── 6. REKVIZITLAR JADVALI ──
+    const colW = cW / 2
+    const rekvizitlar = [
+      { label:'Nomi:',   left: orgName,                          right: cpName,                          bold: true  },
+      { label:'Manzil:', left: safe(org?.address||'-'),          right: safe(cp?.address||'-'),          bold: false },
+      { label:'H/r:',    left: safe(org?.bank_account||'-'),     right: safe(cp?.bank_account||'-'),     bold: false },
+      { label:'Bank:',   left: safe(org?.bank_name||'-'),        right: safe(cp?.bank_name||'-'),        bold: false },
+      { label:'MFO:',    left: safe(org?.mfo||'-'),              right: safe(cp?.mfo||'-'),              bold: false },
+      { label:'INN:',    left: safe(org?.inn||'-'),              right: safe(cp?.inn||'-'),              bold: false },
+      { label:'Rahbar:', left: orgDir,                           right: cpDir,                           bold: true  },
+    ]
+    const estimatedH = 12 + rekvizitlar.length * 8 + 25
+    if (y > pageH - mB - estimatedH) { doc.addPage(); y = mT }
+    y += 6
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(0,0,0)
+    doc.text("TOMONLARNING REKVIZITLARI VA IMZOLARI", pageW/2, y, {align:'center'})
+    y += 7
+    // Header row
+    doc.setFillColor(235,238,245); doc.setDrawColor(170,170,170)
+    doc.rect(mL, y, colW, 7, 'F'); doc.rect(mL+colW, y, colW, 7, 'F')
+    doc.rect(mL, y, cW, 7, 'S'); doc.line(mL+colW, y, mL+colW, y+7)
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(0,0,0)
+    doc.text('SOTUVCHI', mL+colW/2, y+4.5, {align:'center'})
+    doc.text('XARIDOR',  mL+colW+colW/2, y+4.5, {align:'center'})
+    y += 7
+    // Data rows
+    for (const row of rekvizitlar) {
+      const rH = 8
+      doc.setDrawColor(190,190,190)
+      doc.rect(mL, y, colW, rH); doc.rect(mL+colW, y, colW, rH)
+      // Label (small gray)
+      doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(130,130,130)
+      doc.text(row.label, mL+2, y+3)
+      doc.text(row.label, mL+colW+2, y+3)
+      // Value
+      doc.setFontSize(row.bold ? 9 : 8.5)
+      doc.setFont('helvetica', row.bold ? 'bold' : 'normal'); doc.setTextColor(0,0,0)
+      const lv = doc.splitTextToSize(String(row.left),  colW-18)[0] as string
+      const rv = doc.splitTextToSize(String(row.right), colW-18)[0] as string
+      doc.text(lv, mL+18, y+6.5)
+      doc.text(rv, mL+colW+18, y+6.5)
+      y += rH
+    }
+
+    // ── 7. IMZO QISMI ──
+    y += 6
+    if (y > pageH-mB-30) { doc.addPage(); y = mT }
+    // Two signature lines
+    const sigW = colW - 10
+    doc.setDrawColor(80,80,80)
+    doc.line(mL, y, mL+sigW, y)
+    doc.line(mL+colW+5, y, mL+colW+5+sigW, y)
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,60,60)
+    doc.text(`/ ${orgDir}`, mL+sigW+1, y)
+    doc.text(`/ ${cpDir}`,  mL+colW+5+sigW+1, y)
+    y += 5
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(120,120,120)
+    doc.text('M.O.', mL+10, y)
+    doc.text('M.O.', mL+colW+15, y)
+    // Images
+    try {
+      if (signB64) doc.addImage(signB64,'PNG', mL, y-15, 30, 15)
+      if (stampB64) doc.addImage(stampB64,'PNG', mL+5, y-10, 25, 25)
+    } catch { /* rasm yuklanmadi */ }
+
+    addPageNums()
+    doc.save(`shartnoma-${c.contract_number.replace(/\//g,'-')}.pdf`)
   }
 
   // ── Filters ──
@@ -689,8 +1139,12 @@ export default function DashboardPage() {
                   </button>
                 ))}
                 <div className="border-t border-gray-700">
+                  <button onClick={() => { setTab('organizations'); setOrgDropdown(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-gray-700 transition text-sm text-gray-300">
+                    <span>🏢</span> Tashkilotlarni boshqarish
+                  </button>
                   <button onClick={() => { setModal('org'); setOrgDropdown(false) }}
-                    className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-gray-700 transition text-sm text-blue-400">
+                    className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-gray-700 transition text-sm text-blue-400 border-t border-gray-700/50">
                     <span>+</span> Yangi tashkilot
                   </button>
                 </div>
@@ -768,14 +1222,28 @@ export default function DashboardPage() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16"/>
             </svg>
           </button>
-          <h1 className="text-base font-semibold flex-1">{NAV.find(n=>n.key===tab)?.label}</h1>
+          <h1 className="text-base font-semibold flex-1">
+            {tab==='organizations' ? 'Tashkilotlarim' : NAV.find(n=>n.key===tab)?.label}
+          </h1>
+          {tab==='shablonlar' && (
+            <button
+              onClick={() => { setContractForm({...emptyContract, organization_id: activeOrg?.id||''}); setModal('contract') }}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition shadow-lg shadow-blue-900/30"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4"/>
+              </svg>
+              Shablon asosida shartnoma yaratish
+            </button>
+          )}
           {['contracts','organizations','counterparties'].includes(tab) && (
             <button
               onClick={() => {
-                if (tab==='contracts') { if (!canCreateContract()) { setModal('upgrade'); return } setModal('contract') }
+                if (tab==='contracts') { if (!canCreateContract()) { setModal('upgrade'); return } setContractForm({...emptyContract, organization_id: activeOrg?.id||''}); setModal('contract') }
                 if (tab==='organizations') setModal('org')
                 if (tab==='counterparties') setModal('cp')
               }}
+
               className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition shadow-lg shadow-blue-900/30"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -858,7 +1326,7 @@ export default function DashboardPage() {
 
               <div className="grid grid-cols-3 gap-4">
                 {[
-                  { label:'Shartnoma yaratish', icon:'📄', action:()=>{ if(!canCreateContract()){setModal('upgrade');return}; setTab('contracts'); setModal('contract') } },
+                  { label:'Shartnoma yaratish', icon:'📄', action:()=>{ if(!canCreateContract()){setModal('upgrade');return}; setTab('contracts'); setContractForm({...emptyContract, organization_id: activeOrg?.id||''}); setModal('contract') } },
                   { label:"Tashkilot qo'shish", icon:'🏢', action:()=>{ setTab('organizations'); setModal('org') } },
                   { label:"Kontragent qo'shish", icon:'🤝', action:()=>{ setTab('counterparties'); setModal('cp') } },
                 ].map((a,i) => (
@@ -1067,6 +1535,226 @@ export default function DashboardPage() {
             </div>
           )}
 
+          {/* ─── SPESIFIKATSIYALAR ─── */}
+          {tab==='specifications' && (
+            <div className="space-y-4">
+              {/* Header */}
+              <div className="flex items-center gap-3">
+                <div className="text-sm text-gray-400">{specs.length} ta spesifikatsiya</div>
+                <button onClick={() => {
+                  setEditingSpec(null)
+                  setSpecForm(emptySpecForm)
+                  setSpecModal(true)
+                }} className="ml-auto flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+                  + Yangi spesifikatsiya
+                </button>
+              </div>
+
+              {specs.length === 0 ? (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-16 text-center">
+                  <div className="text-5xl mb-4">📋</div>
+                  <p className="text-gray-400 font-medium">Spesifikatsiya yo'q</p>
+                  <p className="text-gray-600 text-sm mt-1">Yangi spesifikatsiya yarating</p>
+                </div>
+              ) : (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-800 bg-gray-800/40">
+                        <th className="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Spec raqami</th>
+                        <th className="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Shartnoma</th>
+                        <th className="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Kontragent</th>
+                        <th className="text-center px-4 py-2.5 text-xs text-gray-400 font-medium">Pozitsiyalar</th>
+                        <th className="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Jami summa</th>
+                        <th className="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Sana</th>
+                        <th className="px-4 py-2.5 text-xs text-gray-400 font-medium text-right">Amallar</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {specs.map(spec => {
+                        const total = spec.items.reduce((s,it)=>s+it.summa,0)
+                        const contract = spec.contracts
+                        return (
+                          <tr key={spec.id} className="border-t border-gray-800/50 hover:bg-gray-800/20 transition">
+                            <td className="px-4 py-2.5">
+                              <span className="text-sm font-semibold text-white">#{spec.spec_number}</span>
+                              {spec.notes && <div className="text-xs text-gray-500 mt-0.5 truncate max-w-[120px]">{spec.notes}</div>}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              {contract
+                                ? <span className="text-xs bg-blue-900/40 text-blue-300 px-2 py-0.5 rounded-full">№{contract.contract_number}</span>
+                                : <span className="text-xs text-gray-600">—</span>}
+                            </td>
+                            <td className="px-4 py-2.5 text-sm text-gray-300 max-w-[150px] truncate">
+                              {contract?.counterparties?.name || <span className="text-gray-600">—</span>}
+                            </td>
+                            <td className="px-4 py-2.5 text-center">
+                              <span className="text-xs bg-gray-800 text-gray-300 px-2 py-0.5 rounded-full">{spec.items.length} ta</span>
+                            </td>
+                            <td className="px-4 py-2.5 text-right text-white font-semibold text-sm">
+                              {total.toLocaleString()} <span className="text-xs text-gray-500">so'm</span>
+                            </td>
+                            <td className="px-4 py-2.5 text-xs text-gray-500">
+                              {new Date(spec.created_at).toLocaleDateString('uz-UZ')}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <div className="flex items-center justify-end gap-1">
+                                <button onClick={() => generateSpecPDF(spec)}
+                                  className="flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded hover:bg-emerald-900/20 transition font-medium">
+                                  📥 PDF
+                                </button>
+                                <button onClick={() => {
+                                  setEditingSpec(spec)
+                                  setSpecForm({ contract_id: spec.contract_id||'', spec_number: spec.spec_number, items: spec.items, notes: spec.notes||'' })
+                                  setSpecModal(true)
+                                }} className="text-xs text-blue-400 hover:text-blue-300 px-2 py-1 rounded hover:bg-blue-900/20 transition">
+                                  Tahrirlash
+                                </button>
+                                <button onClick={() => deleteSpec(spec.id)}
+                                  className="text-xs text-red-500 hover:text-red-400 px-2 py-1 rounded hover:bg-red-900/20 transition">
+                                  O'chirish
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ─── SHABLONLAR ─── */}
+          {tab==='shablonlar' && (() => {
+            const TYPE_TABS = [
+              { key: 'barchasi', label: 'Barchasi' },
+              { key: 'oldi_sotdi', label: 'Oldi-sotdi' },
+              { key: 'xizmat', label: "Xizmat ko'rsatish" },
+              { key: 'ijara', label: 'Ijara' },
+              { key: 'pudrat', label: 'Pudrat' },
+              { key: 'qoshimcha', label: "Qo'shimcha" },
+              { key: 'moliyaviy', label: 'Moliyaviy yordam' },
+              { key: 'daval', label: 'Daval' },
+              { key: 'xalqaro', label: 'Xalqaro' },
+              { key: 'boshqa', label: 'Boshqa' },
+            ]
+            const allTemplates = [...customTemplates, ...DEFAULT_TEMPLATES]
+            const filtered = templateFilter === 'barchasi'
+              ? allTemplates
+              : allTemplates.filter(t => t.type === templateFilter)
+            const typeColors: Record<string,string> = {
+              oldi_sotdi: 'bg-blue-900/60 text-blue-300',
+              xizmat: 'bg-emerald-900/60 text-emerald-300',
+              ijara: 'bg-purple-900/60 text-purple-300',
+              pudrat: 'bg-orange-900/60 text-orange-300',
+              qoshimcha: 'bg-gray-700 text-gray-300',
+              moliyaviy: 'bg-yellow-900/60 text-yellow-300',
+              daval: 'bg-cyan-900/60 text-cyan-300',
+              xalqaro: 'bg-indigo-900/60 text-indigo-300',
+              boshqa: 'bg-pink-900/60 text-pink-300',
+            }
+            return (
+              <div className="space-y-5">
+                {/* Header row */}
+                <div className="flex items-center gap-3">
+                  <div className="text-sm text-gray-400">{allTemplates.length} ta shablon</div>
+                  <button
+                    onClick={() => { setEditingCustomTemplate(null); setCustomTplForm(emptyCustomTpl); setCustomTemplateModal(true) }}
+                    className="ml-auto flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+                    + Shablon qo'shish
+                  </button>
+                </div>
+
+                {/* Type filter tabs */}
+                <div className="flex flex-wrap gap-2">
+                  {TYPE_TABS.map(t => (
+                    <button key={t.key}
+                      onClick={() => setTemplateFilter(t.key)}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+                        templateFilter === t.key
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'
+                      }`}>
+                      {t.label}
+                      <span className="ml-1.5 text-xs opacity-70">
+                        {t.key === 'barchasi' ? allTemplates.length : allTemplates.filter(x=>x.type===t.key).length}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Template grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {filtered.map(tpl => (
+                    <div key={tpl.id} className={`bg-gray-900 border rounded-xl p-5 flex flex-col gap-3 hover:border-gray-600 transition ${tpl.isDefault ? 'border-gray-800' : 'border-blue-800/50'}`}>
+                      <div className="flex items-start gap-3">
+                        <span className="text-3xl flex-shrink-0">{tpl.icon}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeColors[tpl.type] || 'bg-gray-700 text-gray-300'}`}>
+                              {CONTRACT_TYPES[tpl.type] || tpl.type}
+                            </span>
+                            {!tpl.isDefault && (
+                              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-blue-900/70 text-blue-300">Mening shablonlarim</span>
+                            )}
+                          </div>
+                          <h3 className="font-semibold text-white text-sm leading-tight">{tpl.name}</h3>
+                        </div>
+                      </div>
+                      <p className="text-gray-400 text-xs leading-relaxed flex-1">{tpl.description}</p>
+                      {tpl.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {tpl.tags.slice(0,3).map(tag => (
+                            <span key={tag} className="text-xs bg-gray-800 text-gray-500 px-2 py-0.5 rounded">#{tag}</span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex gap-2 pt-1 border-t border-gray-800 flex-wrap">
+                        <button onClick={() => setTemplatePreview(tpl)}
+                          className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white px-3 py-1.5 rounded-lg transition font-medium">
+                          Ko'rish
+                        </button>
+                        <button onClick={() => {
+                          setEditingCustomTemplate(tpl.isDefault ? null : tpl)
+                          setCustomTplForm({ type: tpl.type, name: tpl.name, description: tpl.description, content: tpl.content })
+                          setCustomTemplateModal(true)
+                        }} className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white px-3 py-1.5 rounded-lg transition font-medium">
+                          Tahrirlash
+                        </button>
+                        {!tpl.isDefault && (
+                          <button onClick={() => deleteCustomTemplate(tpl.id)}
+                            className="text-xs text-red-500 hover:text-red-400 px-3 py-1.5 rounded-lg hover:bg-red-900/20 transition font-medium">
+                            O'chirish
+                          </button>
+                        )}
+                        <button onClick={() => {
+                          setContractForm({...emptyContract, contract_type: tpl.type, organization_id: activeOrg?.id||''})
+                          setModal('contract')
+                          setTab('contracts')
+                        }} className="ml-auto text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded-lg transition font-medium">
+                          Shartnoma yaratish
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Info box */}
+                <div className="bg-blue-950/40 border border-blue-900/50 rounded-xl p-4 flex gap-3">
+                  <span className="text-xl flex-shrink-0">💡</span>
+                  <div className="text-sm text-blue-300">
+                    <p className="font-medium mb-1">Shablonlar qanday ishlaydi?</p>
+                    <p className="text-blue-400 text-xs leading-relaxed">
+                      Standart shablonlar O'zbekiston Respublikasi qonunchiligiga muvofiq tayyorlangan. "Nusxa olish" orqali ularni o'zingizga moslashtirishingiz mumkin. "+ Shablon qo'shish" bilan yangi shablon yarating. "Shartnoma yaratish" tugmasi tanlangan tur bo'yicha shartnoma formini ochadi.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+
           {/* ─── COUNTERPARTIES ─── */}
           {tab==='counterparties' && (
             <div className="space-y-4">
@@ -1129,7 +1817,7 @@ export default function DashboardPage() {
                             </td>
                             <td className="px-4 py-3" onClick={e=>e.stopPropagation()}>
                               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition">
-                                <button onClick={()=>{ setEditingCp(cp); setCpForm({name:cp.name,inn:cp.inn,director_name:cp.director_name,bank_name:cp.bank_name,bank_account:cp.bank_account,mfo:cp.mfo,address:cp.address}); setModal('cp') }}
+                                <button onClick={()=>{ setEditingCp(cp); setCpForm({name:cp.name,inn:cp.inn,director_name:cp.director_name,bank_name:cp.bank_name,bank_account:cp.bank_account,mfo:cp.mfo,address:cp.address,phone:cp.phone||'',qqsreg:cp.qqsreg||''}); setModal('cp') }}
                                   className="p-1.5 bg-gray-700 hover:bg-blue-700 rounded text-xs" title="Tahrirlash">✎</button>
                                 <button onClick={()=>deleteCp(cp.id)}
                                   className="p-1.5 bg-gray-700 hover:bg-red-800 rounded text-xs" title="O'chirish">🗑</button>
@@ -1517,6 +2205,10 @@ export default function DashboardPage() {
                 <input className={inp} placeholder="00869" value={cpForm.mfo} onChange={e=>setCpForm({...cpForm,mfo:e.target.value})}/></div>
               <div><label className={lbl}>Manzil</label>
                 <input className={inp} placeholder="Samarqand, ..." value={cpForm.address} onChange={e=>setCpForm({...cpForm,address:e.target.value})}/></div>
+              <div><label className={lbl}>Telefon raqami</label>
+                <input className={inp} placeholder="+998901234567" value={(cpForm as any).phone||''} onChange={e=>setCpForm({...cpForm,phone:e.target.value} as any)}/></div>
+              <div><label className={lbl}>QQS kodi</label>
+                <input className={inp} placeholder="318060007067" value={(cpForm as any).qqsreg||''} onChange={e=>setCpForm({...cpForm,qqsreg:e.target.value} as any)}/></div>
             </div>
             <ModalActions onClose={()=>{ setModal(null); setEditingCp(null); setCpForm(emptyCp) }} saving={saving}/>
           </form>
@@ -1538,7 +2230,7 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div className="flex gap-2">
-                <button onClick={()=>{ setEditingCp(cpDetail); setCpForm({name:cpDetail.name,inn:cpDetail.inn,director_name:cpDetail.director_name,bank_name:cpDetail.bank_name,bank_account:cpDetail.bank_account,mfo:cpDetail.mfo,address:cpDetail.address}); setModal('cp'); setCpDetail(null) }}
+                <button onClick={()=>{ setEditingCp(cpDetail); setCpForm({name:cpDetail.name,inn:cpDetail.inn,director_name:cpDetail.director_name,bank_name:cpDetail.bank_name,bank_account:cpDetail.bank_account,mfo:cpDetail.mfo,address:cpDetail.address,phone:cpDetail.phone||'',qqsreg:cpDetail.qqsreg||''}); setModal('cp'); setCpDetail(null) }}
                   className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-xs font-medium transition">✎ Tahrirlash</button>
                 <button onClick={()=>deleteCp(cpDetail.id)}
                   className="px-3 py-1.5 bg-red-900/50 hover:bg-red-800 text-red-400 hover:text-white rounded-lg text-xs font-medium transition border border-red-800/50">🗑 O'chirish</button>
@@ -1553,14 +2245,16 @@ export default function DashboardPage() {
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Asosiy ma&apos;lumotlar</h3>
                 <div className="grid grid-cols-2 gap-3">
                   {[
-                    ['Tashkilot nomi', cpDetail.name],
-                    ['STR / INN', cpDetail.inn],
-                    ['Rahbar', cpDetail.director_name],
-                    ['Manzil', cpDetail.address],
-                  ].map(([l,v]) => (
-                    <div key={l} className={`bg-gray-800/50 rounded-lg px-3 py-2.5 ${l==='Manzil'||l==='Tashkilot nomi'?'col-span-2':''}`}>
-                      <div className="text-xs text-gray-500 mb-0.5">{l}</div>
-                      <div className="text-sm text-white font-medium">{v||'—'}</div>
+                    ['Tashkilot nomi', cpDetail.name, true],
+                    ['STR / INN', cpDetail.inn, false],
+                    ['Rahbar', cpDetail.director_name, false],
+                    ['Telefon', cpDetail.phone, false],
+                    ['QQS kodi', cpDetail.qqsreg, false],
+                    ['Manzil', cpDetail.address, true],
+                  ].map(([l,v,full]) => (
+                    <div key={l as string} className={`bg-gray-800/50 rounded-lg px-3 py-2.5 ${full?'col-span-2':''}`}>
+                      <div className="text-xs text-gray-500 mb-0.5">{l as string}</div>
+                      <div className="text-sm text-white font-medium">{(v as string)||'—'}</div>
                     </div>
                   ))}
                 </div>
@@ -1651,6 +2345,7 @@ export default function DashboardPage() {
           saving={saving}
           inp={inp}
           lbl={lbl}
+          onCpAdded={async (cp) => { await loadCps(); setContractForm((f: any) => ({...f, counterparty_id: cp.id})) }}
         />
       )}
 
@@ -1707,6 +2402,382 @@ export default function DashboardPage() {
             </div>
           </div>
         </Modal>
+      )}
+
+      {/* ─── SPEC MODAL ─── */}
+      {specModal && (() => {
+        const [specCpSearch, setSpecCpSearch] = [
+          (specForm as any)._cpSearch || '',
+          (v: string) => setSpecForm(f => ({ ...f, _cpSearch: v } as any))
+        ]
+        const filteredCps = cps.filter(cp =>
+          cp.name.toLowerCase().includes(specCpSearch.toLowerCase()) ||
+          (cp.inn||'').includes(specCpSearch)
+        )
+        const selectedCpId = (specForm as any)._cpId || ''
+        const cpContracts = contracts.filter(c =>
+          c.organization_id === activeOrg?.id && c.counterparty_id === selectedCpId
+        )
+        const asosiy = specForm.items.reduce((s,it)=>s+it.miqdori*it.narxi,0)
+        const qqsJ   = specForm.items.reduce((s,it)=>s+(it.qqs_summa||0),0)
+        const grand  = specForm.items.reduce((s,it)=>s+it.summa,0)
+        const [barchaQ, setBarchaQ] = [
+          (specForm as any)._barchaQqs || '',
+          (v: string) => {
+            setSpecForm(f => {
+              const items = f.items.map(it => {
+                const foiz = v==='siz'||v==='0' ? 0 : Number(v)
+                const qqs_summa = Math.round(it.miqdori * it.narxi * foiz / 100)
+                return { ...it, qqs_foiz: v, qqs_summa, summa: it.miqdori*it.narxi + qqs_summa }
+              })
+              return { ...f, items, _barchaQqs: v } as any
+            })
+          }
+        ]
+        const updateItem = (idx: number, patch: Partial<SpecItem>) => {
+          setSpecForm(f => {
+            const items = [...f.items]
+            const cur = { ...items[idx], ...patch }
+            const foiz = cur.qqs_foiz==='siz'||cur.qqs_foiz==='0' ? 0 : Number(cur.qqs_foiz)
+            cur.qqs_summa = Math.round(cur.miqdori * cur.narxi * foiz / 100)
+            cur.summa = cur.miqdori * cur.narxi + cur.qqs_summa
+            items[idx] = cur
+            return { ...f, items }
+          })
+        }
+        return (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-2">
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-6xl h-[96vh] flex flex-col">
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
+                <h2 className="text-lg font-semibold text-white">
+                  {editingSpec ? 'Spesifikatsiyani tahrirlash' : 'Yangi spesifikatsiya'}
+                </h2>
+                <button onClick={() => { setSpecModal(false); setEditingSpec(null) }}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition text-lg">✕</button>
+              </div>
+
+              <form onSubmit={saveSpec} className="flex flex-col flex-1 overflow-hidden">
+                <div className="overflow-y-auto flex-1 p-6 space-y-5">
+
+                  {/* 1. Kontragent qidirish (STR/INN) */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs text-gray-400 mb-1.5 block">Kontragent (STR/INN yoki nomi)</label>
+                      <input value={specCpSearch}
+                        onChange={e => {
+                          setSpecCpSearch(e.target.value)
+                          setSpecForm(f => ({ ...f, _cpId: '', contract_id: '', spec_number: '' } as any))
+                        }}
+                        placeholder="STR, INN yoki tashkilot nomi..."
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"/>
+                      {specCpSearch && filteredCps.length > 0 && !selectedCpId && (
+                        <div className="mt-1 bg-gray-800 border border-gray-700 rounded-lg overflow-hidden shadow-xl max-h-40 overflow-y-auto">
+                          {filteredCps.slice(0,8).map(cp => (
+                            <button key={cp.id} type="button"
+                              onClick={() => setSpecForm(f => ({ ...f, _cpId: cp.id, _cpSearch: cp.name, contract_id: '', spec_number: '' } as any))}
+                              className="w-full text-left px-3 py-2 hover:bg-gray-700 text-sm text-gray-300 flex justify-between items-center">
+                              <span className="font-medium">{cp.name}</span>
+                              <span className="text-xs text-gray-500">{cp.inn}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {selectedCpId && (
+                        <div className="mt-1 flex items-center gap-2 bg-blue-900/20 border border-blue-700/40 rounded-lg px-3 py-1.5">
+                          <span className="text-xs text-blue-300 flex-1">{specCpSearch}</span>
+                          <button type="button" onClick={() => setSpecForm(f => ({ ...f, _cpId: '', _cpSearch: '', contract_id: '', spec_number: '' } as any))}
+                            className="text-gray-500 hover:text-white text-xs">✕</button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 2. Shartnoma tanlash */}
+                    <div>
+                      <label className="text-xs text-gray-400 mb-1.5 block">
+                        Shartnoma {selectedCpId ? <span className="text-red-400">*</span> : <span className="text-gray-600">(avval kontragent tanlang)</span>}
+                      </label>
+                      <select disabled={!selectedCpId}
+                        value={specForm.contract_id}
+                        onChange={e => {
+                          const cid = e.target.value
+                          const autoNum = cid ? nextSpecNumber(cid) : ''
+                          setSpecForm(f => ({ ...f, contract_id: cid, spec_number: editingSpec ? f.spec_number : autoNum } as any))
+                        }}
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed">
+                        <option value="">— Shartnoma tanlang —</option>
+                        {cpContracts.map(c => (
+                          <option key={c.id} value={c.id}>
+                            №{c.contract_number} ({c.contract_date})
+                          </option>
+                        ))}
+                        {selectedCpId && cpContracts.length === 0 && (
+                          <option disabled>Bu kontragent bilan shartnoma yo'q</option>
+                        )}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Spesifikatsiya raqami + izoh */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs text-gray-400 mb-1.5 block">Spesifikatsiya raqami <span className="text-red-400">*</span></label>
+                      <input required value={specForm.spec_number}
+                        onChange={e => setSpecForm(f => ({ ...f, spec_number: e.target.value }))}
+                        placeholder="Avtomatik yoki qo'lda kiriting"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"/>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 mb-1.5 block">Izoh <span className="text-gray-600">(ixtiyoriy)</span></label>
+                      <input value={specForm.notes}
+                        onChange={e => setSpecForm(f => ({ ...f, notes: e.target.value }))}
+                        placeholder="Qo'shimcha izoh"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"/>
+                    </div>
+                  </div>
+
+                  {/* Items jadvali — xuddi shartnoma modal step-3 ko'rinishi */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-white font-medium">Mahsulot/xizmatlar ro&apos;yxati</p>
+                        <p className="text-xs text-gray-500 mt-0.5">PDFga 1-ilova sifatida qo&apos;shiladi.</p>
+                      </div>
+                      {specForm.items.length > 0 && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500">Barcha uchun:</span>
+                          <div className="flex gap-0.5 bg-gray-800 rounded-lg p-0.5">
+                            {QQS_OPTIONS_GLOBAL.map(opt => (
+                              <button key={opt.val} type="button"
+                                onClick={() => setBarchaQ(opt.val)}
+                                className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${barchaQ === opt.val ? 'bg-orange-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {specForm.items.length > 0 && (
+                      <div className="rounded-xl border border-gray-700 overflow-hidden">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs min-w-[640px]">
+                            <thead>
+                              <tr className="bg-gray-800 text-gray-400 text-left border-b border-gray-700">
+                                <th className="px-3 py-2.5 w-7 text-center">№</th>
+                                <th className="px-2 py-2.5">Nomi *</th>
+                                <th className="px-2 py-2.5 w-20">O&apos;lchov *</th>
+                                <th className="px-2 py-2.5 w-24 text-right">Soni *</th>
+                                <th className="px-2 py-2.5 w-24 text-right">Narx *</th>
+                                <th className="px-2 py-2.5 w-20 text-center">QQS, %</th>
+                                <th className="px-2 py-2.5 w-24 text-right">QQS, miqdori</th>
+                                <th className="px-2 py-2.5 w-24 text-right">Jami *</th>
+                                <th className="px-1 py-2.5 w-7"></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {specForm.items.map((item, i) => (
+                                <tr key={i} className="border-t border-gray-700/50 hover:bg-gray-800/20">
+                                  <td className="px-3 py-1.5 text-gray-500 text-center">{i+1}</td>
+                                  <td className="px-2 py-1.5">
+                                    <input className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs"
+                                      value={item.nomi} placeholder="Mahsulot yoki xizmat nomi"
+                                      onChange={e => updateItem(i, { nomi: e.target.value })} required/>
+                                  </td>
+                                  <td className="px-2 py-1.5">
+                                    <BirlikPicker value={item.birlik} options={BIRLIKLAR_GLOBAL}
+                                      onChange={v => updateItem(i, { birlik: v })}/>
+                                  </td>
+                                  <td className="px-2 py-1.5">
+                                    <input type="number" min={0} step="any"
+                                      className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-2 text-white focus:outline-none focus:border-blue-500 text-sm font-medium text-right"
+                                      value={item.miqdori} onChange={e => updateItem(i, { miqdori: parseFloat(e.target.value)||0 })}/>
+                                  </td>
+                                  <td className="px-2 py-1.5">
+                                    <input type="number" min={0} step="any"
+                                      className="w-full bg-gray-800/80 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500 text-xs text-right"
+                                      value={item.narxi} onChange={e => updateItem(i, { narxi: parseFloat(e.target.value)||0 })}/>
+                                  </td>
+                                  <td className="px-2 py-1.5">
+                                    <select className="w-full bg-gray-800 border border-gray-700 rounded px-1 py-1 text-white focus:outline-none focus:border-orange-500 text-xs text-center cursor-pointer"
+                                      value={item.qqs_foiz} onChange={e => updateItem(i, { qqs_foiz: e.target.value })}>
+                                      {QQS_OPTIONS_GLOBAL.map(opt => <option key={opt.val} value={opt.val}>{opt.label}</option>)}
+                                    </select>
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right text-orange-400 font-medium">
+                                    {item.qqs_summa > 0 ? item.qqs_summa.toLocaleString() : <span className="text-gray-600">—</span>}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right text-white font-semibold">
+                                    {item.summa.toLocaleString()}
+                                  </td>
+                                  <td className="px-1 py-1.5">
+                                    <button type="button" onClick={() => setSpecForm(f => ({ ...f, items: f.items.filter((_,j)=>j!==i) }))}
+                                      className="w-6 h-6 flex items-center justify-center rounded text-gray-600 hover:text-red-400 hover:bg-red-900/20 transition">×</button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot>
+                              <tr className="border-t-2 border-gray-600 bg-gray-800/60 text-xs font-semibold">
+                                <td colSpan={4} className="px-3 py-2.5 text-right text-gray-400">Jami:</td>
+                                <td className="px-2 py-2.5 text-right text-white">{asosiy.toLocaleString()}</td>
+                                <td className="px-2 py-2.5 text-center text-gray-500">—</td>
+                                <td className="px-2 py-2.5 text-right text-orange-400">{qqsJ > 0 ? qqsJ.toLocaleString() : '—'}</td>
+                                <td className="px-2 py-2.5 text-right text-white font-bold text-sm">{grand.toLocaleString()}</td>
+                                <td></td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    <button type="button"
+                      onClick={() => setSpecForm(f => ({ ...f, items: [...f.items, { nomi:'', birlik:'dona', miqdori:1, narxi:0, qqs_foiz:'siz', qqs_summa:0, summa:0 }] }))}
+                      className="w-full border-2 border-dashed border-gray-700 hover:border-emerald-600 text-gray-500 hover:text-emerald-400 py-2.5 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2">
+                      + Mahsulot/xizmat qo&apos;shish
+                    </button>
+                    {specForm.items.length === 0 && (
+                      <p className="text-center text-gray-600 text-xs py-1">Ixtiyoriy — qo&apos;shmasangiz PDFda jadval bo&apos;lmaydi.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Footer */}
+                <div className="flex gap-3 px-6 py-4 border-t border-gray-800 flex-shrink-0">
+                  <button type="button" onClick={() => { setSpecModal(false); setEditingSpec(null) }}
+                    className="flex-1 border border-gray-700 text-gray-300 hover:bg-gray-800 py-2.5 rounded-lg text-sm transition">
+                    Bekor qilish
+                  </button>
+                  <button type="submit" disabled={saving}
+                    className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 text-white py-2.5 rounded-lg text-sm font-medium transition flex items-center justify-center gap-2">
+                    {saving ? 'Saqlanmoqda...' : <><span>💾</span>{editingSpec ? 'Saqlash' : 'Yaratish'}</>}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* ─── CUSTOM TEMPLATE MODAL ─── */}
+      {customTemplateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[96vh] flex flex-col shadow-2xl">
+            <div className="flex items-center gap-3 p-5 border-b border-gray-800 flex-shrink-0">
+              <h2 className="font-bold text-white text-base flex-1">
+                {editingCustomTemplate ? 'Shablonni tahrirlash' : customTplForm.name ? "Shablonni moslashtirish" : "Yangi shablon qo'shish"}
+              </h2>
+              <button onClick={() => { setCustomTemplateModal(false); setEditingCustomTemplate(null); setCustomTplForm(emptyCustomTpl) }}
+                className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-gray-800 transition">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+            <form onSubmit={saveCustomTemplate} className="flex-1 overflow-auto flex flex-col">
+              <div className="p-5 space-y-4 flex-1 overflow-auto">
+                {/* Type + Name row */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">Shartnoma turi</label>
+                    <select value={customTplForm.type} onChange={e=>setCustomTplForm({...customTplForm, type: e.target.value})}
+                      className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500">
+                      {Object.entries(CONTRACT_TYPES).map(([k,v]) => (
+                        <option key={k} value={k}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">Shablon nomi *</label>
+                    <input value={customTplForm.name} onChange={e=>setCustomTplForm({...customTplForm, name: e.target.value})}
+                      placeholder="Masalan: Yillik xizmat shartnomasi"
+                      className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                  </div>
+                </div>
+                {/* Description */}
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1.5">Tavsif (ixtiyoriy)</label>
+                  <input value={customTplForm.description} onChange={e=>setCustomTplForm({...customTplForm, description: e.target.value})}
+                    placeholder="Shablon haqida qisqacha ma'lumot"
+                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                </div>
+                {/* Content */}
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs text-gray-400">Shablon matni *</label>
+                    <span className="text-xs text-gray-500">Placeolderlar: {'{{RAQAM}}'} {'{{SANA}}'} {'{{BUYURTMACHI}}'} {'{{IJROCHI}}'} {'{{SUMMA}}'}</span>
+                  </div>
+                  <textarea value={customTplForm.content} onChange={e=>setCustomTplForm({...customTplForm, content: e.target.value})}
+                    rows={22}
+                    placeholder={"SHARTNOMA MATNI\nNo {{RAQAM}}\n\n{{SHAHAR}} shahri   \"{{SANA}}\"\n\n..."}
+                    className="w-full bg-gray-950 border border-gray-700 text-gray-200 rounded-xl px-4 py-3 text-xs font-mono leading-relaxed focus:outline-none focus:border-blue-500 resize-none"/>
+                </div>
+                <div className="bg-gray-800/50 rounded-xl p-3 text-xs text-gray-500 leading-relaxed">
+                  <span className="text-gray-400 font-medium">Barcha placeholderlar: </span>
+                  {'{{RAQAM}}'} — raqam &nbsp;|&nbsp; {'{{SANA}}'} — sana &nbsp;|&nbsp; {'{{SHAHAR}}'} — shahar &nbsp;|&nbsp;
+                  {'{{BUYURTMACHI}}'} — tashkilot nomi &nbsp;|&nbsp; {'{{BUYURTMACHI_INN}}'} — INN &nbsp;|&nbsp; {'{{BUYURTMACHI_RAHBAR}}'} — rahbar &nbsp;|&nbsp;
+                  {'{{IJROCHI}}'} — kontragent nomi &nbsp;|&nbsp; {'{{IJROCHI_INN}}'} &nbsp;|&nbsp; {'{{IJROCHI_RAHBAR}}'} &nbsp;|&nbsp;
+                  {'{{SUMMA}}'} — summa raqamda &nbsp;|&nbsp; {'{{SUMMA_MATN}}'} — summa so'zda
+                </div>
+              </div>
+              <div className="flex gap-3 p-4 border-t border-gray-800 flex-shrink-0">
+                <button type="button" onClick={() => { setCustomTemplateModal(false); setEditingCustomTemplate(null); setCustomTplForm(emptyCustomTpl) }}
+                  className="flex-1 border border-gray-700 text-gray-300 hover:bg-gray-800 py-2.5 rounded-xl text-sm font-medium transition">
+                  Bekor qilish
+                </button>
+                <button type="submit" disabled={saving}
+                  className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white py-2.5 rounded-xl text-sm font-medium transition">
+                  {saving ? 'Saqlanmoqda...' : (editingCustomTemplate ? 'Saqlash' : "Qo'shish")}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ─── TEMPLATE PREVIEW MODAL ─── */}
+      {templatePreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={()=>setTemplatePreview(null)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[92vh] flex flex-col shadow-2xl" onClick={e=>e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-start gap-3 p-5 border-b border-gray-800 flex-shrink-0">
+              <span className="text-3xl">{templatePreview.icon}</span>
+              <div className="flex-1 min-w-0">
+                <h2 className="font-bold text-white text-base leading-tight">{templatePreview.name}</h2>
+                <p className="text-gray-400 text-xs mt-0.5">{templatePreview.description}</p>
+              </div>
+              <button onClick={()=>setTemplatePreview(null)} className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-gray-800 transition flex-shrink-0">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+            {/* Content */}
+            <div className="flex-1 overflow-auto p-5">
+              <pre className="text-xs text-gray-300 font-mono leading-relaxed whitespace-pre-wrap break-words bg-gray-950 rounded-xl p-4 border border-gray-800">
+                {templatePreview.content}
+              </pre>
+            </div>
+            {/* Footer */}
+            <div className="flex gap-3 p-4 border-t border-gray-800 flex-shrink-0">
+              <button onClick={()=>setTemplatePreview(null)}
+                className="flex-1 border border-gray-700 text-gray-300 hover:bg-gray-800 py-2.5 rounded-xl text-sm font-medium transition">
+                Yopish
+              </button>
+              <button
+                onClick={() => {
+                  setContractForm({...emptyContract, contract_type: templatePreview.type, organization_id: activeOrg?.id||''})
+                  setModal('contract')
+                  setTemplatePreview(null)
+                }}
+                className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-xl text-sm font-medium transition">
+                Shu shablon asosida shartnoma yaratish
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {modal==='upgrade' && (
@@ -1817,19 +2888,77 @@ function BirlikPicker({ value, onChange, options }: { value: string; onChange: (
   )
 }
 
+// ─── Shared constants ─────────────────────────────────────
+const BIRLIKLAR_GLOBAL = [
+  'dona','juft','komplekt',"to'plam","o'ram",'rull','quti','xalta','paket',"bo'lak",'varaq',
+  'kg','g','tonna','sentner',
+  'litr','ml','dekalitr',
+  'metr','sm','mm','km',
+  'm²','m³','sm²','sm³',
+  'gektar','sotix',
+  'soat','kun','hafta','oy','yil',
+  'ta','marta','xizmat','loyiha','bosqich','tur',
+]
+const QQS_OPTIONS_GLOBAL = [
+  { val: 'siz', label: 'QQSsiz' },
+  { val: '0',   label: '0%' },
+  { val: '12',  label: '12%' },
+  { val: '15',  label: '15%' },
+]
+
 // ─── Contract Modal ───────────────────────────────────────
-function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp, lbl }: {
+function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp, lbl, onCpAdded }: {
   orgs: Org[]; cps: Counterparty[]
   form: any; setForm: (f: any) => void
   onSave: (e: React.FormEvent) => void
   onClose: () => void; saving: boolean
   inp: string; lbl: string
+  onCpAdded: (cp: Counterparty) => void
 }) {
-  const [step, setStep] = useState<1|2|3>(1)
+  const [step, setStep] = useState<1|2|3|4>(1)
   const [useTemplate, setUseTemplate] = useState(true)
   const [structure, setStructure] = useState<ContractStructure>({ bolimlar: [] })
   const [specItems, setSpecItems] = useState<SpecItem[]>(form.spec_items || [])
   const [barchaQqs, setBarchaQqs] = useState('')
+  const [extraFields, setExtraFields] = useState<Record<string, string>>({})
+
+  // Kontragent qidiruv
+  const [cpSearch, setCpSearch] = useState('')
+  const [cpDropOpen, setCpDropOpen] = useState(false)
+  const filteredCpsInModal = cpSearch.trim()
+    ? cps.filter(c => c.name.toLowerCase().includes(cpSearch.toLowerCase()) || (c.inn||'').includes(cpSearch))
+    : cps
+  const selectedCp = cps.find(c => c.id === form.counterparty_id)
+
+  // Tez kontragent qo'shish
+  const [quickCpOpen, setQuickCpOpen] = useState(false)
+  const [quickCpSaving, setQuickCpSaving] = useState(false)
+  const emptyQCp = { name:'', inn:'', director_name:'', bank_name:'', bank_account:'', mfo:'', address:'', phone:'', qqsreg:'' }
+  const [quickCpForm, setQuickCpForm] = useState(emptyQCp)
+
+  async function saveQuickCp(e: React.FormEvent) {
+    e.preventDefault()
+    if (!quickCpForm.name.trim()) return
+    setQuickCpSaving(true)
+    const { data, error } = await supabase.from('counterparties').insert({
+      name: quickCpForm.name,
+      inn: quickCpForm.inn || null,
+      director_name: quickCpForm.director_name || null,
+      bank_name: quickCpForm.bank_name || null,
+      bank_account: quickCpForm.bank_account || null,
+      mfo: quickCpForm.mfo || null,
+      address: quickCpForm.address || null,
+      phone: quickCpForm.phone || null,
+      qqsreg: quickCpForm.qqsreg || null,
+    }).select().single()
+    setQuickCpSaving(false)
+    if (!error && data) {
+      onCpAdded(data as Counterparty)
+      setQuickCpOpen(false)
+      setQuickCpForm(emptyQCp)
+      setCpSearch(data.name)
+    }
+  }
 
   const BIRLIKLAR = [
     'dona','juft','komplekt',"to'plam","o'ram",'rull','quti','xalta','paket',"bo'lak",'varaq',
@@ -1847,6 +2976,58 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
     { val: '12',  label: '12%' },
     { val: '15',  label: '15%' },
   ]
+
+  type ExtraFieldCfg = { key: string; label: string; placeholder?: string; type?: 'text'|'number'|'date'|'textarea'; required?: boolean }
+  const EXTRA_FIELDS_CONFIG: Record<string, ExtraFieldCfg[]> = {
+    ijara: [
+      { key: 'ijara_manzil', label: "Ijara ob'ekti manzili", placeholder: "Toshkent sh., Chilonzor t., 5-uy, 1-xona", type: 'text', required: true },
+      { key: 'ijara_maydon', label: "Maydon (m²)", placeholder: "50", type: 'number' },
+      { key: 'ijara_muddat', label: "Ijara muddati", placeholder: "12 oy", type: 'text' },
+      { key: 'ijara_boshlanish', label: "Ijara boshlanish sanasi", type: 'date' },
+      { key: 'ijara_tugash', label: "Ijara tugash sanasi", type: 'date' },
+    ],
+    xizmat: [
+      { key: 'xizmat_tavsif', label: "Ko'rsatiladigan xizmat tavsifi", placeholder: "Masalan: veb-sayt yaratish, buxgalteriya xizmati...", type: 'textarea', required: true },
+      { key: 'xizmat_boshlanish', label: "Xizmat boshlanish sanasi", type: 'date' },
+      { key: 'xizmat_tugash', label: "Xizmat tugash sanasi", type: 'date' },
+      { key: 'xizmat_tolov', label: "To'lov tartibi", placeholder: "Oyiga bir marta, xizmat ko'rsatilgandan so'ng 5 kun ichida", type: 'textarea' },
+    ],
+    pudrat: [
+      { key: 'pudrat_obekt', label: "Qurilish ob'ekti manzili", placeholder: "Toshkent sh., Yunusobod t., Amir Temur ko'ch., 45", type: 'text', required: true },
+      { key: 'pudrat_tavsif', label: "Bajariladigan ishlar tavsifi", placeholder: "3-qavatli turar-joy binosi qurilishi, yer osti ishlari", type: 'textarea' },
+      { key: 'pudrat_boshlanish', label: "Ishlar boshlanish sanasi", type: 'date' },
+      { key: 'pudrat_tugash', label: "Ishlar tugash sanasi", type: 'date' },
+    ],
+    moliyaviy: [
+      { key: 'qarz_maqsad', label: "Qarz maqsadi", placeholder: "Biznes faoliyatini kengaytirish uchun", type: 'textarea' },
+      { key: 'qarz_foiz', label: "Foiz shartlari", placeholder: "Foizsiz beriladi / yillik 15% foiz bilan", type: 'text' },
+      { key: 'qarz_muddat', label: "Qaytarish muddati", placeholder: "12 oy", type: 'text' },
+      { key: 'qarz_tartib', label: "Qaytarish tartibi", placeholder: "Har oyning 25-sanasida teng qismlarda", type: 'textarea' },
+    ],
+    daval: [
+      { key: 'daval_material', label: "Xom ashyo (material) nomi", placeholder: "G'o'za tolasi, jun, charm...", type: 'text', required: true },
+      { key: 'daval_miqdor', label: "Material miqdori", placeholder: "100 kg", type: 'text' },
+      { key: 'daval_mahsulot', label: "Tayyor mahsulot nomi", placeholder: "Ip gazlama, poyabzal...", type: 'text' },
+      { key: 'daval_muddat', label: "Qayta ishlash muddati", placeholder: "30 kalendar kuni", type: 'text' },
+    ],
+    xalqaro: [
+      { key: 'incoterms', label: "INCOTERMS sharti", placeholder: "FOB Toshkent 2020", type: 'text' },
+      { key: 'yetkazish_joy', label: "Yetkazib berish joyi", placeholder: "Toshkent port, O'zbekiston", type: 'text' },
+      { key: 'tolov_usuli', label: "To'lov usuli", placeholder: "Bank o'tkazmasi (SWIFT), akkreditiv", type: 'text' },
+      { key: 'valyuta', label: "Hisob-kitob valyutasi", placeholder: "USD", type: 'text' },
+    ],
+    qoshimcha: [
+      { key: 'asosiy_raqam', label: "Asosiy shartnoma raqami", placeholder: "2025/001", type: 'text', required: true },
+      { key: 'asosiy_sana', label: "Asosiy shartnoma sanasi", type: 'date', required: true },
+      { key: 'ozgartirish', label: "Kiritilayotgan o'zgarishlar", placeholder: "Shartnomaning 3.1-bandiga: to'lov muddati 10 kundan 15 kunga uzaytirilsin", type: 'textarea', required: true },
+    ],
+    oldi_sotdi: [
+      { key: 'yetkazish_muddat', label: "Yetkazib berish muddati", placeholder: "Avans to'lovidan so'ng 10 ish kuni ichida", type: 'text' },
+      { key: 'yetkazish_joy', label: "Yetkazib berish joyi", placeholder: "Buyurtmachi ombori, Toshkent sh.", type: 'text' },
+    ],
+  }
+  const currentExtraFields = EXTRA_FIELDS_CONFIG[form.contract_type] || []
+  const hasExtraFields = currentExtraFields.length > 0
 
   function calcItem(item: SpecItem): SpecItem {
     const asosiy = item.miqdori * item.narxi
@@ -1913,6 +3094,14 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
   const EMPTY_STRUCTURE: ContractStructure = { bolimlar: [{ sarlavha: '', bandlar: [{ matn: '' }] }] }
 
   function goToStep2() {
+    if (hasExtraFields) {
+      setStep(2)
+    } else {
+      loadTemplateAndGoToBolimlar()
+    }
+  }
+
+  function loadTemplateAndGoToBolimlar() {
     if (useTemplate) {
       const { org, cp } = buildOrgCp(form)
       const amount = parseFloat(form.amount) || 0
@@ -1923,6 +3112,7 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
         org_name: org?.name, org_inn: org?.inn, org_director: org?.director_name,
         cp_name: cp?.name, cp_inn: cp?.inn, cp_director: cp?.director_name,
         amount, amount_text: numberToWords(amount),
+        extra: extraFields,
       }
       const s = getStructure(form.contract_type, tplData)
       setStructure(s)
@@ -1939,7 +3129,7 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
       setStructure(EMPTY_STRUCTURE)
       setForm({ ...form, content: '' })
     }
-    setStep(2)
+    setStep(3)
   }
 
   function reloadStructure() {
@@ -1952,6 +3142,7 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
       org_name: org?.name, org_inn: org?.inn, org_director: org?.director_name,
       cp_name: cp?.name, cp_inn: cp?.inn, cp_director: cp?.director_name,
       amount, amount_text: numberToWords(amount),
+      extra: extraFields,
     }
     const s = getStructure(form.contract_type, tplData)
     applyStructure(s)
@@ -2014,13 +3205,19 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                 className={`px-3 py-1 rounded-md text-xs font-medium transition ${step===1 ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
                 1. Ma&apos;lumotlar
               </button>
-              <button type="button" onClick={goToStep2}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition ${step===2 ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
-                2. Bo&apos;limlar
-              </button>
+              {hasExtraFields && (
+                <button type="button" onClick={() => setStep(2)}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition ${step===2 ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
+                  2. Qo&apos;shimcha
+                </button>
+              )}
               <button type="button" onClick={() => setStep(3)}
                 className={`px-3 py-1 rounded-md text-xs font-medium transition ${step===3 ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
-                3. Spesifikatsiya
+                {hasExtraFields ? '3.' : '2.'} Bo&apos;limlar
+              </button>
+              <button type="button" onClick={() => setStep(4)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition ${step===4 ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}>
+                {hasExtraFields ? '4.' : '3.'} Spesifikatsiya
               </button>
             </div>
           </div>
@@ -2114,14 +3311,122 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                       </select>
                       {orgs.length===0 && <p className="text-xs text-yellow-500 mt-1">⚠ Avval tashkilot qo&apos;shing</p>}
                     </div>
-                    <div>
-                      <label className={lbl}>Kontragent (2-tomon) *</label>
-                      <select className={inp} required value={form.counterparty_id}
-                        onChange={e => handleFieldChange('counterparty_id', e.target.value)}>
-                        <option value="">— Kontragent tanlang —</option>
-                        {cps.map(c => <option key={c.id} value={c.id}>{c.name}{c.inn ? ` (${c.inn})` : ''}</option>)}
-                      </select>
-                      {cps.length===0 && <p className="text-xs text-yellow-500 mt-1">⚠ Avval kontragent qo&apos;shing</p>}
+                    <div className="relative">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className={lbl + ' mb-0'}>Kontragent (2-tomon) *</label>
+                        <button type="button" onClick={() => setQuickCpOpen(true)}
+                          className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition font-medium">
+                          <span className="text-base leading-none">+</span> Yangi qo'shish
+                        </button>
+                      </div>
+                      {/* Tanlangan kontragent ko'rsatish */}
+                      {selectedCp ? (
+                        <div className="flex items-center gap-2 bg-gray-800 border border-blue-600 rounded-lg px-3 py-2.5">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-white font-medium truncate">{selectedCp.name}</div>
+                            {selectedCp.inn && <div className="text-xs text-gray-400">STR: {selectedCp.inn}</div>}
+                          </div>
+                          <button type="button" onClick={() => { handleFieldChange('counterparty_id',''); setCpSearch(''); setCpDropOpen(true) }}
+                            className="text-gray-400 hover:text-white text-lg leading-none flex-shrink-0">×</button>
+                        </div>
+                      ) : (
+                        <div>
+                          <input
+                            value={cpSearch}
+                            onChange={e => { setCpSearch(e.target.value); setCpDropOpen(true) }}
+                            onFocus={() => setCpDropOpen(true)}
+                            placeholder="Nomi yoki STR (INN) bilan qidirish..."
+                            className={inp}
+                          />
+                          {cpDropOpen && (
+                            <div className="absolute z-50 left-0 right-0 mt-1 bg-gray-800 border border-gray-600 rounded-xl shadow-2xl max-h-52 overflow-auto">
+                              {filteredCpsInModal.length === 0 ? (
+                                <div className="px-3 py-3 text-sm text-gray-500 text-center">
+                                  Kontragent topilmadi —{' '}
+                                  <button type="button" onClick={() => { setQuickCpOpen(true); setCpDropOpen(false) }}
+                                    className="text-blue-400 hover:text-blue-300">yangi qo'shish</button>
+                                </div>
+                              ) : (
+                                filteredCpsInModal.map(cp => (
+                                  <button key={cp.id} type="button"
+                                    onClick={() => { handleFieldChange('counterparty_id', cp.id); setCpSearch(''); setCpDropOpen(false) }}
+                                    className="w-full text-left px-3 py-2.5 hover:bg-gray-700 transition border-b border-gray-700/50 last:border-0">
+                                    <div className="text-sm text-white">{cp.name}</div>
+                                    {cp.inn && <div className="text-xs text-gray-400">STR: {cp.inn}</div>}
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {/* Tez qo'shish modal — barcha maydonlar */}
+                      {quickCpOpen && (
+                        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setQuickCpOpen(false)}>
+                          <div className="bg-gray-900 border border-blue-700 rounded-2xl w-full max-w-lg shadow-2xl" onClick={e => e.stopPropagation()}>
+                            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+                              <div>
+                                <h3 className="font-bold text-white text-base">Yangi kontragent qo'shish</h3>
+                                <p className="text-xs text-gray-400 mt-0.5">To'liq ma'lumot kiritilsa shartnoma to'liq bo'ladi</p>
+                              </div>
+                              <button type="button" onClick={() => setQuickCpOpen(false)} className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-gray-800">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+                              </button>
+                            </div>
+                            <form onSubmit={saveQuickCp}>
+                              <div className="p-5 space-y-3 max-h-[70vh] overflow-auto">
+                                {/* Asosiy */}
+                                <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold">Asosiy ma'lumotlar</p>
+                                <input value={quickCpForm.name} onChange={e => setQuickCpForm({...quickCpForm, name: e.target.value})}
+                                  placeholder="Tashkilot nomi *" required
+                                  className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <input value={quickCpForm.inn} onChange={e => setQuickCpForm({...quickCpForm, inn: e.target.value})}
+                                    placeholder="STR / INN"
+                                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                                  <input value={quickCpForm.director_name} onChange={e => setQuickCpForm({...quickCpForm, director_name: e.target.value})}
+                                    placeholder="Rahbar F.I.O."
+                                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <input value={quickCpForm.phone} onChange={e => setQuickCpForm({...quickCpForm, phone: e.target.value})}
+                                    placeholder="Telefon raqami"
+                                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                                  <input value={quickCpForm.qqsreg} onChange={e => setQuickCpForm({...quickCpForm, qqsreg: e.target.value})}
+                                    placeholder="QQS reg. raqami"
+                                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                                </div>
+                                <input value={quickCpForm.address} onChange={e => setQuickCpForm({...quickCpForm, address: e.target.value})}
+                                  placeholder="Yuridik manzil"
+                                  className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                                {/* Bank */}
+                                <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold pt-1">Bank rekvizitlari</p>
+                                <input value={quickCpForm.bank_name} onChange={e => setQuickCpForm({...quickCpForm, bank_name: e.target.value})}
+                                  placeholder="Bank nomi"
+                                  className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <input value={quickCpForm.bank_account} onChange={e => setQuickCpForm({...quickCpForm, bank_account: e.target.value})}
+                                    placeholder="Hisob raqami (h/r)"
+                                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                                  <input value={quickCpForm.mfo} onChange={e => setQuickCpForm({...quickCpForm, mfo: e.target.value})}
+                                    placeholder="MFO"
+                                    className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"/>
+                                </div>
+                              </div>
+                              <div className="flex gap-3 px-5 py-4 border-t border-gray-800">
+                                <button type="button" onClick={() => setQuickCpOpen(false)}
+                                  className="flex-1 border border-gray-700 text-gray-300 hover:bg-gray-800 py-2.5 rounded-xl text-sm transition">
+                                  Bekor qilish
+                                </button>
+                                <button type="submit" disabled={quickCpSaving}
+                                  className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white py-2.5 rounded-xl text-sm font-medium transition">
+                                  {quickCpSaving ? 'Saqlanmoqda...' : 'Saqlash va tanlash'}
+                                </button>
+                              </div>
+                            </form>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2163,13 +3468,64 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
 
                 <button type="button" onClick={goToStep2}
                   className="w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2">
-                  {useTemplate ? 'Shablonni yuklash va tahrirlash →' : 'Bo\'sh tuzilmani ochish →'}
+                  {hasExtraFields ? "Qo'shimcha ma'lumotlar →" : useTemplate ? 'Shablonni yuklash va tahrirlash →' : "Bo'sh tuzilmani ochish →"}
                 </button>
               </div>
             )}
 
-            {/* ── 2-QADAM: Bo'limlar va bandlar ── */}
+            {/* ── 2-QADAM: Qo'shimcha maydonlar (shartnoma turiga xos) ── */}
             {step === 2 && (
+              <div className="space-y-5">
+                <div className="flex items-center gap-3 mb-1">
+                  <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-bold flex-shrink-0">2</div>
+                  <div>
+                    <p className="text-sm font-semibold text-white">Shartnomaga xos ma&apos;lumotlar</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Ushbu maydonlar shartnoma matni blanklarini avtomatik to&apos;ldiradi</p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {currentExtraFields.map((field) => (
+                    <div key={field.key}>
+                      <label className={lbl}>
+                        {field.label}{field.required && <span className="text-red-400 ml-0.5">*</span>}
+                      </label>
+                      {field.type === 'textarea' ? (
+                        <textarea
+                          rows={3}
+                          className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 resize-none"
+                          placeholder={field.placeholder}
+                          value={extraFields[field.key] || ''}
+                          onChange={e => setExtraFields({ ...extraFields, [field.key]: e.target.value })}
+                        />
+                      ) : (
+                        <input
+                          type={field.type || 'text'}
+                          className="w-full bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500"
+                          placeholder={field.placeholder}
+                          value={extraFields[field.key] || ''}
+                          onChange={e => setExtraFields({ ...extraFields, [field.key]: e.target.value })}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button type="button" onClick={() => setStep(1)}
+                    className="px-4 py-2.5 border border-gray-700 text-gray-300 rounded-lg text-sm hover:bg-gray-800 transition">
+                    ← Orqaga
+                  </button>
+                  <button type="button" onClick={loadTemplateAndGoToBolimlar}
+                    className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-xl text-sm font-semibold transition">
+                    {useTemplate ? 'Shablonni yuklash va tahrirlash →' : "Bo'sh tuzilmani ochish →"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── 3-QADAM: Bo'limlar va bandlar ── */}
+            {step === 3 && (
               <div className="space-y-4">
 
                 {/* Status bar */}
@@ -2245,7 +3601,7 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
                   + Bo&apos;lim qo&apos;shish
                 </button>
                 <div className="flex justify-end pt-2">
-                  <button type="button" onClick={() => setStep(3)}
+                  <button type="button" onClick={() => setStep(4)}
                     className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition">
                     Spesifikatsiya →
                   </button>
@@ -2253,8 +3609,8 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
               </div>
             )}
 
-            {/* ── 3-QADAM: Spesifikatsiya ── */}
-            {step === 3 && (
+            {/* ── 4-QADAM: Spesifikatsiya ── */}
+            {step === 4 && (
               <div className="space-y-3">
                 <datalist id="birliklar-list">
                   {BIRLIKLAR.map(b => <option key={b} value={b}/>)}
@@ -2387,8 +3743,11 @@ function ContractModal({ orgs, cps, form, setForm, onSave, onClose, saving, inp,
 
           {/* Footer */}
           <div className="px-6 py-4 border-t border-gray-800 flex gap-3 flex-shrink-0">
-            {(step === 2 || step === 3) && (
-              <button type="button" onClick={() => setStep(step === 3 ? 2 : 1)}
+            {step > 1 && step !== 2 && (
+              <button type="button" onClick={() => {
+                if (step === 4) setStep(3)
+                else if (step === 3) setStep(hasExtraFields ? 2 : 1)
+              }}
                 className="px-4 py-2.5 border border-gray-700 text-gray-300 rounded-lg text-sm hover:bg-gray-800 transition">
                 ← Orqaga
               </button>
